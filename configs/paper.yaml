@@ -1,0 +1,95 @@
+general:
+  starting_cash_eur: 150.0
+
+data:
+  path: data/sample_ohlcv.csv
+  default_micro:
+    spread_bps: 8.0
+    depth: 100000.0
+    imbalance: 0.0
+
+features:
+  return_window: 1
+  atr_window: 14
+  volume_z_window: 20
+
+cost:
+  maker_fee_bps: 1.0
+  taker_fee_bps: 3.0
+  slippage_base_bps: 0.5
+  slippage_vol_mult: 0.01
+  spread_component_factor: 0.5
+
+gate:
+  safety_margin_bps: 0.5
+  max_spread_bps: 20.0
+  max_atr_bps: 250.0
+  session_start_utc: 0
+  session_end_utc: 24
+  stale_seconds: 1800
+
+alpha:
+  lookback: 3
+  threshold_bps: 0.5
+  scale: 5.0
+
+risk:
+  max_exposure_eur: 50.0
+  vol_target_bps: 100.0
+  daily_loss_limit_eur: 8.0
+  max_drawdown_pct: 10.0
+  cooldown_bars: 3
+  allow_short: false
+
+order:
+  type: market
+  post_only: false
+  limit_offset_bps: 2.0
+  min_trade_btc: 0.00005
+  slice_count: 1
+
+execution:
+  latency_bars: 0
+  partial_fill_ratio: 1.0
+  slippage_bps: 1.0
+
+md:
+  mock_data_path: data/sample_ohlcv.csv
+  replay_speed: 0.0
+  stale_seconds: 10
+  stale_book_seconds: 10
+  stale_trade_seconds: 15
+  depth: 100
+  interval_seconds: 300
+
+core:
+  trading_enabled: true
+  stale_seconds: 10
+  max_orders_per_min: 20
+  rate_limit_pause_sec: 2.0
+
+exec:
+  rate_limit_per_sec: 1.0
+  reconcile_interval_sec: 30.0
+  canary_mode: false
+  deadman_timeout_sec: 60
+  deadman_tick_sec: 20
+  deadman_in_paper: false
+  rate_limit_pause_sec: 2.0
+  owntrades_dedupe_size: 50000
+
+journal:
+  db_path: logs/journal_paper.db
+  json_path: logs/journal_paper.jsonl
+
+ipc:
+  market_queue_size: 1
+  order_queue_size: 100
+  exec_report_queue_size: 200
+  journal_queue_size: 10000
+  telemetry_queue_size: 1000
+  heartbeat_queue_size: 1000
+  heartbeat_timeout: 5.0
+
+control:
+  enabled: false

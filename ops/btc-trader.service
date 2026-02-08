@@ -1,0 +1,24 @@
+[Unit]
+Description=BTC Trader Engine (Kraken Spot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=trader
+Group=trader
+WorkingDirectory=/opt/btc-trader
+EnvironmentFile=/opt/btc-trader/.env
+ExecStart=/usr/bin/python3 -m trading.launch --mode live --config configs/live.yaml
+Restart=always
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,70 @@
+general:
+  starting_cash_eur: 150.0
+
+data:
+  source: csv
+  path: data/sample_ohlcv.csv
+  default_micro:
+    spread_bps: 8.0
+    depth: 100000.0
+    imbalance: 0.0
+
+features:
+  return_window: 1
+  atr_window: 14
+  volume_z_window: 20
+
+cost:
+  maker_fee_bps: 1.0
+  taker_fee_bps: 3.0
+  slippage_base_bps: 0.5
+  slippage_vol_mult: 0.01
+  spread_component_factor: 0.5
+
+gate:
+  safety_margin_bps: 0.5
+  max_spread_bps: 20.0
+  max_atr_bps: 250.0
+  session_start_utc: 0
+  session_end_utc: 24
+  stale_seconds: 1800
+
+alpha:
+  type: momentum
+  lookback: 3
+  threshold_bps: 0.5
+  scale: 5.0
+
+risk:
+  max_exposure_eur: 50.0
+  vol_target_bps: 100.0
+  daily_loss_limit_eur: 8.0
+  max_drawdown_pct: 10.0
+  cooldown_bars: 3
+  allow_short: false
+
+order:
+  type: market
+  post_only: false
+  limit_offset_bps: 2.0
+  min_trade_btc: 0.00005
+  slice_count: 1
+
+execution:
+  latency_bars: 0
+  partial_fill_ratio: 1.0
+  slippage_bps: 1.0
+
+journal:
+  path: logs/journal.jsonl
+
+report:
+  path: reports/report.json
+
+# live (stub) settings
+live:
+  kraken_pair: XBT/EUR
+  websocket_url: wss://ws.kraken.com/v2
+  rest_url: https://api.kraken.com
+  rate_limit_per_sec: 1.0
+  mock_data_path: data/sample_ohlcv.csv

@@ -1,0 +1,9 @@
+/opt/btc-trader/logs/*.jsonl /opt/btc-trader/logs/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}
