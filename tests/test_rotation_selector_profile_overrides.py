@@ -1372,11 +1372,141 @@ class TestRotationSelectorProfileOverrides(unittest.TestCase):
 
         with mock.patch.dict(
             os.environ,
-            {"ROTATION_SELECTOR_SIMPLE_SWING_REQUIRE_MICRO_VALLEY": "0"},
+            {
+                "ROTATION_SELECTOR_SIMPLE_SWING_REQUIRE_MICRO_VALLEY": "0",
+                "ROTATION_SELECTOR_ENTRY_QUALITY_ENABLED": "0",
+            },
             clear=False,
         ):
             self.assertTrue(rotation_auto_coin_selector._simple_swing_entry_ready(row))
             self.assertEqual(rotation_auto_coin_selector._simple_swing_gate_reason(row), "")
+
+    def test_simple_swing_entry_quality_blocks_still_falling_setup(self) -> None:
+        row = {
+            "keep_open": False,
+            "turns24": 72.0,
+            "width72_pct": 18.0,
+            "cycle_fit_profit_step_ok": True,
+            "cycle_fit_ok": True,
+            "pos_24h_pct": 10.0,
+            "bars_since_swing_low": 3.0,
+            "bars_since_30m_low": 1.0,
+            "rebound_from_30m_low_bps": 32.0,
+            "ret15_bps": 18.0,
+            "ret30_bps": 20.0,
+            "structure_slope_short_bps": 1.2,
+            "active_leg": "fall",
+            "recent_rebound_ready": True,
+            "in_valley_context": True,
+            "quote_volume_5m": 100.0,
+            "quote_volume_60m": 10000.0,
+            "spread_bps": 8.0,
+        }
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "ROTATION_SELECTOR_SIMPLE_SWING_REQUIRE_MICRO_VALLEY": "0",
+                "ROTATION_SELECTOR_ENTRY_QUALITY_ENABLED": "1",
+                "ROTATION_SELECTOR_ENTRY_QUALITY_MIN_SCORE": "52",
+                "ROTATION_SELECTOR_ENTRY_QUALITY_MIN_CONFIRMATIONS": "4",
+                "ROTATION_SELECTOR_ENTRY_QUALITY_BLOCK_ACTIVE_LEG_FALL": "1",
+                "ROTATION_SELECTOR_ENTRY_QUALITY_MIN_5M_QUOTE_VOLUME": "25",
+                "ROTATION_SELECTOR_ENTRY_QUALITY_MIN_60M_QUOTE_VOLUME": "5000",
+                "ROTATION_SELECTOR_ENTRY_QUALITY_VOLUME_REQUIRE_BOTH": "1",
+            },
+            clear=False,
+        ):
+            self.assertFalse(rotation_auto_coin_selector._simple_swing_entry_ready(row))
+            self.assertEqual(
+                rotation_auto_coin_selector._simple_swing_gate_reason(row),
+                "rule_entry_quality_still_falling",
+            )
+
+    def test_simple_swing_entry_quality_blocks_thin_volume_setup(self) -> None:
+        row = {
+            "keep_open": False,
+            "turns24": 72.0,
+            "width72_pct": 18.0,
+            "cycle_fit_profit_step_ok": True,
+            "cycle_fit_ok": True,
+            "pos_24h_pct": 10.0,
+            "bars_since_swing_low": 3.0,
+            "bars_since_30m_low": 1.0,
+            "rebound_from_30m_low_bps": 32.0,
+            "ret15_bps": 18.0,
+            "ret30_bps": 20.0,
+            "structure_slope_short_bps": 1.2,
+            "active_leg": "rise",
+            "recent_rebound_ready": True,
+            "in_valley_context": True,
+            "quote_volume_5m": 4.0,
+            "quote_volume_60m": 900.0,
+            "spread_bps": 8.0,
+        }
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "ROTATION_SELECTOR_SIMPLE_SWING_REQUIRE_MICRO_VALLEY": "0",
+                "ROTATION_SELECTOR_ENTRY_QUALITY_ENABLED": "1",
+                "ROTATION_SELECTOR_ENTRY_QUALITY_MIN_5M_QUOTE_VOLUME": "25",
+                "ROTATION_SELECTOR_ENTRY_QUALITY_MIN_60M_QUOTE_VOLUME": "5000",
+                "ROTATION_SELECTOR_ENTRY_QUALITY_VOLUME_REQUIRE_BOTH": "1",
+            },
+            clear=False,
+        ):
+            self.assertFalse(rotation_auto_coin_selector._simple_swing_entry_ready(row))
+            self.assertEqual(
+                rotation_auto_coin_selector._simple_swing_gate_reason(row),
+                "rule_entry_quality_volume",
+            )
+
+    def test_simple_swing_entry_quality_accepts_confirmed_turn(self) -> None:
+        row = {
+            "keep_open": False,
+            "turns24": 72.0,
+            "width72_pct": 18.0,
+            "cycle_fit_profit_step_ok": True,
+            "cycle_fit_ok": True,
+            "pos_24h_pct": 10.0,
+            "bars_since_swing_low": 3.0,
+            "bars_since_30m_low": 1.0,
+            "rebound_from_30m_low_bps": 28.0,
+            "ret15_bps": 18.0,
+            "ret30_bps": 24.0,
+            "structure_slope_short_bps": 1.4,
+            "active_leg": "rise",
+            "recent_rebound_ready": True,
+            "in_valley_context": True,
+            "quote_volume_5m": 120.0,
+            "quote_volume_60m": 12000.0,
+            "spread_bps": 8.0,
+        }
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "ROTATION_SELECTOR_SIMPLE_SWING_REQUIRE_MICRO_VALLEY": "0",
+                "ROTATION_SELECTOR_ENTRY_QUALITY_ENABLED": "1",
+                "ROTATION_SELECTOR_ENTRY_QUALITY_MIN_SCORE": "52",
+                "ROTATION_SELECTOR_ENTRY_QUALITY_MIN_CONFIRMATIONS": "4",
+                "ROTATION_SELECTOR_ENTRY_QUALITY_MIN_RET30_BPS": "0",
+                "ROTATION_SELECTOR_ENTRY_QUALITY_MIN_REBOUND30_BPS": "12",
+                "ROTATION_SELECTOR_ENTRY_QUALITY_MIN_SLOPE_SHORT_BPS": "0",
+                "ROTATION_SELECTOR_ENTRY_QUALITY_MAX_SPREAD_BPS": "22",
+                "ROTATION_SELECTOR_ENTRY_QUALITY_MIN_5M_QUOTE_VOLUME": "25",
+                "ROTATION_SELECTOR_ENTRY_QUALITY_MIN_60M_QUOTE_VOLUME": "5000",
+                "ROTATION_SELECTOR_ENTRY_QUALITY_VOLUME_REQUIRE_BOTH": "1",
+            },
+            clear=False,
+        ):
+            self.assertTrue(rotation_auto_coin_selector._simple_swing_entry_ready(row))
+            self.assertEqual(rotation_auto_coin_selector._simple_swing_gate_reason(row), "")
+            self.assertGreaterEqual(
+                rotation_auto_coin_selector._simple_swing_entry_quality_score(row),
+                52.0,
+            )
 
     def test_simple_swing_selector_score_prefers_cleaner_micro_valley(self) -> None:
         clean_row = {

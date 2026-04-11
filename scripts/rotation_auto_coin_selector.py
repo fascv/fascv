@@ -3997,6 +3997,73 @@ def _simple_swing_micro_valley_min_quality_score() -> float:
         return 35.0
 
 
+def _selector_entry_quality_enabled() -> bool:
+    return _env_flag("ROTATION_SELECTOR_ENTRY_QUALITY_ENABLED", default=False)
+
+
+def _selector_entry_quality_min_score() -> float:
+    return max(0.0, _as_float(os.environ.get("ROTATION_SELECTOR_ENTRY_QUALITY_MIN_SCORE"), 52.0))
+
+
+def _selector_entry_quality_min_confirmations() -> int:
+    return max(
+        1,
+        int(_as_float(os.environ.get("ROTATION_SELECTOR_ENTRY_QUALITY_MIN_CONFIRMATIONS"), 4.0)),
+    )
+
+
+def _selector_entry_quality_min_ret30_bps() -> float:
+    return _as_float(os.environ.get("ROTATION_SELECTOR_ENTRY_QUALITY_MIN_RET30_BPS"), 0.0)
+
+
+def _selector_entry_quality_min_rebound30_bps() -> float:
+    raw = os.environ.get("ROTATION_SELECTOR_ENTRY_QUALITY_MIN_REBOUND30_BPS")
+    if raw is None or str(raw).strip() == "":
+        return _simple_swing_min_rebound_bps()
+    return max(0.0, _as_float(raw, _simple_swing_min_rebound_bps()))
+
+
+def _selector_entry_quality_min_slope_short_bps() -> float:
+    return _as_float(os.environ.get("ROTATION_SELECTOR_ENTRY_QUALITY_MIN_SLOPE_SHORT_BPS"), 0.0)
+
+
+def _selector_entry_quality_max_spread_bps() -> float:
+    return max(0.0, _as_float(os.environ.get("ROTATION_SELECTOR_ENTRY_QUALITY_MAX_SPREAD_BPS"), 22.0))
+
+
+def _selector_entry_quality_block_active_leg_fall() -> bool:
+    return _env_flag("ROTATION_SELECTOR_ENTRY_QUALITY_BLOCK_ACTIVE_LEG_FALL", default=True)
+
+
+def _selector_entry_quality_min_quote_volume_5m() -> float:
+    raw = os.environ.get("ROTATION_SELECTOR_ENTRY_QUALITY_MIN_5M_QUOTE_VOLUME")
+    if raw is None or str(raw).strip() == "":
+        raw = os.environ.get("ROTATION_MIN_5M_QUOTE_VOLUME", "0.0")
+    return max(0.0, _as_float(raw, 0.0))
+
+
+def _selector_entry_quality_min_quote_volume_60m() -> float:
+    raw = os.environ.get("ROTATION_SELECTOR_ENTRY_QUALITY_MIN_60M_QUOTE_VOLUME")
+    if raw is None or str(raw).strip() == "":
+        raw = os.environ.get("ROTATION_MIN_60M_QUOTE_VOLUME", "0.0")
+    return max(0.0, _as_float(raw, 0.0))
+
+
+def _selector_entry_quality_volume_require_both() -> bool:
+    raw = os.environ.get("ROTATION_SELECTOR_ENTRY_QUALITY_VOLUME_REQUIRE_BOTH")
+    if raw is None or str(raw).strip() == "":
+        return _env_flag("ROTATION_VOLUME_GATE_REQUIRE_BOTH", default=True)
+    return _env_flag("ROTATION_SELECTOR_ENTRY_QUALITY_VOLUME_REQUIRE_BOTH", default=True)
+
+
+def _row_quote_volume_5m(row: dict) -> float:
+    return _as_float(row.get("quote_volume_5m", row.get("qv_5m")), 0.0)
+
+
+def _row_quote_volume_60m(row: dict) -> float:
+    return _as_float(row.get("quote_volume_60m", row.get("qv_60m")), 0.0)
+
+
 def _simple_swing_micro_valley_confirmation_signal_count(row: dict) -> int:
     ret15 = _as_float(row.get("ret15_bps"), 0.0)
     rebound30 = _as_float(row.get("rebound_from_30m_low_bps"), 0.0)
@@ -4057,6 +4124,110 @@ def _simple_swing_micro_valley_quality_score(row: dict) -> float:
         + (4.0 * spread_score)
     ) * context_mult
     return max(0.0, min(100.0, quality))
+
+
+def _simple_swing_entry_quality_volume_ok(row: dict) -> bool:
+    min_5m = _selector_entry_quality_min_quote_volume_5m()
+    min_60m = _selector_entry_quality_min_quote_volume_60m()
+    checks: list[bool] = []
+    if min_5m > 0.0:
+        checks.append(_row_quote_volume_5m(row) >= min_5m)
+    if min_60m > 0.0:
+        checks.append(_row_quote_volume_60m(row) >= min_60m)
+    if not checks:
+        return True
+    if _selector_entry_quality_volume_require_both():
+        return all(checks)
+    return any(checks)
+
+
+def _simple_swing_entry_quality_confirmation_count(row: dict) -> int:
+    ret15 = _as_float(row.get("ret15_bps"), 0.0)
+    ret30 = _as_float(row.get("ret30_bps"), 0.0)
+    rebound30 = _as_float(row.get("rebound_from_30m_low_bps"), 0.0)
+    slope_short = _as_float(row.get("structure_slope_short_bps"), 0.0)
+    active_leg = str(row.get("active_leg", "") or "").strip().lower()
+    confirmations = 0
+    if ret15 >= _simple_swing_min_ret15_bps():
+        confirmations += 1
+    if ret30 >= _selector_entry_quality_min_ret30_bps():
+        confirmations += 1
+    if rebound30 >= _selector_entry_quality_min_rebound30_bps():
+        confirmations += 1
+    if slope_short >= _selector_entry_quality_min_slope_short_bps():
+        confirmations += 1
+    if active_leg == "rise" or bool(row.get("recent_rebound_ready")):
+        confirmations += 1
+    if _simple_swing_entry_quality_volume_ok(row):
+        confirmations += 1
+    if _simple_swing_micro_valley_quality_score(row) >= _simple_swing_micro_valley_min_quality_score():
+        confirmations += 1
+    return confirmations
+
+
+def _simple_swing_entry_quality_score(row: dict) -> float:
+    ret15 = max(0.0, _as_float(row.get("ret15_bps"), 0.0))
+    ret30 = max(0.0, _as_float(row.get("ret30_bps"), 0.0))
+    rebound30 = max(0.0, _as_float(row.get("rebound_from_30m_low_bps"), 0.0))
+    slope_short = max(0.0, _as_float(row.get("structure_slope_short_bps"), 0.0))
+    spread = max(0.0, _as_float(row.get("spread_bps"), 0.0))
+    active_leg = str(row.get("active_leg", "") or "").strip().lower()
+    micro_score = _simple_swing_micro_valley_quality_score(row)
+    min_5m = _selector_entry_quality_min_quote_volume_5m()
+    min_60m = _selector_entry_quality_min_quote_volume_60m()
+    volume_ratios: list[float] = []
+    if min_5m > 0.0:
+        volume_ratios.append(min(1.0, _row_quote_volume_5m(row) / min_5m))
+    if min_60m > 0.0:
+        volume_ratios.append(min(1.0, _row_quote_volume_60m(row) / min_60m))
+    volume_score = 8.0 * (
+        sum(volume_ratios) / float(len(volume_ratios))
+        if volume_ratios
+        else 1.0
+    )
+    leg_score = 8.0 if active_leg == "rise" else (4.0 if bool(row.get("recent_rebound_ready")) else 0.0)
+    spread_penalty = max(0.0, spread - 12.0) * 0.8
+    quality = (
+        min(22.0, ret15 * 0.9)
+        + min(18.0, ret30 * 0.35)
+        + min(18.0, rebound30 * 0.45)
+        + min(12.0, slope_short * 4.0)
+        + min(18.0, micro_score * 0.30)
+        + volume_score
+        + leg_score
+        - spread_penalty
+    )
+    return max(0.0, min(100.0, quality))
+
+
+def _simple_swing_entry_quality_gate_reason(row: dict) -> str:
+    if bool(row.get("keep_open")) or not _selector_entry_quality_enabled():
+        return ""
+    if bool(row.get("still_dumping")):
+        return "rule_entry_quality_still_dumping"
+    max_spread = _selector_entry_quality_max_spread_bps()
+    if max_spread > 0.0 and _as_float(row.get("spread_bps"), 9999.0) > max_spread:
+        return "rule_entry_quality_spread"
+    if not _simple_swing_entry_quality_volume_ok(row):
+        return "rule_entry_quality_volume"
+    active_leg = str(row.get("active_leg", "") or "").strip().lower()
+    if _selector_entry_quality_block_active_leg_fall() and active_leg == "fall":
+        return "rule_entry_quality_still_falling"
+    if _as_float(row.get("ret30_bps"), 0.0) < _selector_entry_quality_min_ret30_bps():
+        return "rule_entry_quality_ret30"
+    if _as_float(row.get("rebound_from_30m_low_bps"), 0.0) < _selector_entry_quality_min_rebound30_bps():
+        return "rule_entry_quality_no_rebound"
+    if (
+        _as_float(row.get("structure_slope_short_bps"), 0.0)
+        < _selector_entry_quality_min_slope_short_bps()
+        and not (active_leg == "rise" and bool(row.get("recent_rebound_ready")))
+    ):
+        return "rule_entry_quality_slope"
+    if _simple_swing_entry_quality_confirmation_count(row) < _selector_entry_quality_min_confirmations():
+        return "rule_entry_quality_unconfirmed"
+    if _simple_swing_entry_quality_score(row) < _selector_entry_quality_min_score():
+        return "rule_entry_quality_weak"
+    return ""
 
 
 def _simple_swing_micro_valley_gate_reason(row: dict) -> str:
@@ -4202,7 +4373,11 @@ def _simple_swing_entry_ready(row: dict) -> bool:
         return False
     if _simple_swing_micro_valley_gate_reason(row):
         return False
-    return _simple_swing_is_rising(row)
+    if not _simple_swing_is_rising(row):
+        return False
+    if _simple_swing_entry_quality_gate_reason(row):
+        return False
+    return True
 
 
 def _simple_swing_gate_reason(row: dict) -> str:
@@ -4227,6 +4402,9 @@ def _simple_swing_gate_reason(row: dict) -> str:
         return micro_valley_reason
     if not _simple_swing_is_rising(row):
         return "rule_not_rising_yet"
+    entry_quality_reason = _simple_swing_entry_quality_gate_reason(row)
+    if entry_quality_reason:
+        return entry_quality_reason
     return ""
 
 
@@ -4239,10 +4417,26 @@ def _apply_simple_swing_row_gates(rows: list[dict]) -> list[dict]:
             # downdrift) instead of overwriting with simple-swing gate labels.
             row.setdefault("simple_swing_micro_valley_score", 0.0)
             row.setdefault("simple_swing_micro_valley_confirmed", False)
+            row.setdefault("simple_swing_entry_quality_score", 0.0)
+            row.setdefault("simple_swing_entry_quality_confirmations", 0)
+            row.setdefault("simple_swing_entry_quality_ok", False)
+            row.setdefault("simple_swing_entry_quality_reason", "")
             continue
         row["simple_swing_micro_valley_score"] = round(_simple_swing_micro_valley_quality_score(row), 6)
         row["simple_swing_micro_valley_confirmed"] = bool(_simple_swing_micro_valley_confirmation_ok(row))
+        row["simple_swing_entry_quality_score"] = round(_simple_swing_entry_quality_score(row), 6)
+        row["simple_swing_entry_quality_confirmations"] = int(
+            _simple_swing_entry_quality_confirmation_count(row)
+        )
+        row["simple_swing_entry_quality_ok"] = not bool(
+            _simple_swing_entry_quality_gate_reason(row)
+        )
         reason = _simple_swing_gate_reason(row)
+        row["simple_swing_entry_quality_reason"] = (
+            _simple_swing_entry_quality_gate_reason(row)
+            if _selector_entry_quality_enabled()
+            else ""
+        )
         row["gate_reason"] = reason
     return rows
 
