@@ -36,8 +36,8 @@
   const REPORT_SYMBOL_KEY = 'relay_report_symbol';
   const MIN_REPORT_LOAD_INTERVAL_MS = 20000;
   const MIN_ROTATION_LOAD_INTERVAL_MS = 8000;
-  const MIN_LIVE_LOAD_INTERVAL_MS = 5000;
-  const LIVE_REFRESH_INTERVAL_MS = 10000;
+  const MIN_LIVE_LOAD_INTERVAL_MS = 15000;
+  const LIVE_REFRESH_INTERVAL_MS = 30000;
   let lastReportLoadAtMs = 0;
   let lastRotationLoadAtMs = 0;
   let lastLiveLoadAtMs = 0;

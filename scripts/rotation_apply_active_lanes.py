@@ -40,6 +40,12 @@ LANE_RUNTIME_REQUIRED_ENV: dict[str, str] = {
     "START_MD_GUI": "0",
     "START_EXEC": "0",
 }
+try:
+    INVENTORY_PROTECT_MIN_NOTIONAL_EUR = max(
+        0.0, float(os.getenv("ROTATION_INVENTORY_PROTECT_MIN_NOTIONAL_EUR", "1.0"))
+    )
+except ValueError:
+    INVENTORY_PROTECT_MIN_NOTIONAL_EUR = 1.0
 
 
 def _lane_base_config_path(symbol: str) -> Path:
@@ -609,13 +615,13 @@ def _lane_has_active_inventory(snapshot: dict[str, float | int | bool] | None) -
         return False
     position_notional = _snapshot_position_notional(snapshot)
     open_orders = int(snapshot.get("open_orders_count", 0) or 0)
-    return position_notional > 0.05 or open_orders > 0
+    return position_notional > INVENTORY_PROTECT_MIN_NOTIONAL_EUR or open_orders > 0
 
 
 def _lane_has_position_inventory(snapshot: dict[str, float | int | bool] | None) -> bool:
     if not isinstance(snapshot, dict):
         return False
-    return _snapshot_position_notional(snapshot) > 0.05
+    return _snapshot_position_notional(snapshot) > INVENTORY_PROTECT_MIN_NOTIONAL_EUR
 
 
 def _should_defer_runtime_update(

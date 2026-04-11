@@ -884,6 +884,26 @@ class TestRotationStrategyRuntime(unittest.TestCase):
             self.assertEqual(payload["deferred_watch_only"][0]["symbol"], "SIGN")
             self.assertEqual(payload["deferred_watch_only"][0]["reason"], "inventory_open")
 
+    def test_lane_inventory_protection_ignores_dust_without_open_orders(self) -> None:
+        with mock.patch.object(rotation_apply_active_lanes, "INVENTORY_PROTECT_MIN_NOTIONAL_EUR", 1.0):
+            dust_snapshot = {
+                "position_value_eur": 0.0,
+                "position_btc": 0.0,
+                "mark_price": 1.0,
+                "base_balance_notional_eur": 0.42,
+                "open_orders_count": 0,
+            }
+            self.assertFalse(rotation_apply_active_lanes._lane_has_position_inventory(dust_snapshot))
+            self.assertFalse(rotation_apply_active_lanes._lane_has_active_inventory(dust_snapshot))
+
+            order_snapshot = dict(dust_snapshot, open_orders_count=1)
+            self.assertFalse(rotation_apply_active_lanes._lane_has_position_inventory(order_snapshot))
+            self.assertTrue(rotation_apply_active_lanes._lane_has_active_inventory(order_snapshot))
+
+            real_position_snapshot = dict(dust_snapshot, base_balance_notional_eur=1.01)
+            self.assertTrue(rotation_apply_active_lanes._lane_has_position_inventory(real_position_snapshot))
+            self.assertTrue(rotation_apply_active_lanes._lane_has_active_inventory(real_position_snapshot))
+
     def test_start_lane_falls_back_to_restart_when_transient_unit_is_still_loaded(self) -> None:
         fake_lanes = {
             "BANANAS31": {

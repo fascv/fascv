@@ -3029,6 +3029,8 @@ class RelayHandler(BaseHTTPRequestHandler):
             json_response(self, 502, {"detail": str(exc)})
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
+        if self.path.startswith("/rotation/live"):
+            return
         sys.stderr.write("%s - - [%s] %s\n" % (self.address_string(), self.log_date_time_string(), format % args))
 
 
