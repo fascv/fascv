@@ -1559,7 +1559,7 @@ def _build_contract_risk_cache(
     *,
     scan_symbols: list[str],
 ) -> tuple[dict[str, dict[str, object]], dict[str, object]]:
-    enabled = _env_flag("ROTATION_TOKEN_PREFILTER_CONTRACT_ENABLED", "1")
+    enabled = _env_flag("ROTATION_TOKEN_PREFILTER_CONTRACT_ENABLED", "0")
     if not enabled:
         return {}, {"enabled": False}
     max_age_sec = int(_env_hours("ROTATION_TOKEN_PREFILTER_RECHECK_HOURS", 24.0) * 3600.0)
