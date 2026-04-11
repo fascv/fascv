@@ -22,6 +22,7 @@ from trading.ipc.events import ControlCommand, Heartbeat, JournalEvent, NewsEven
 from trading.ipc.queues import try_put, queue_depth
 from trading.order.builder import OrderBuilder, OrderConfig
 from trading.processes.context import ProcessContext
+from trading.risk.exit_observer import ExitLearningObserver
 from trading.risk.sizing import RiskConfig, RiskManager
 from trading.types import Fill, MarketEvent, RiskDecision
 from trading.warmup import warmup_feature_and_alpha
@@ -140,6 +141,19 @@ def _parse_iso_datetime(raw: Any) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _instrument_pair_and_symbol(cfg: Dict[str, Any]) -> tuple[str, str]:
+    raw = ""
+    for path in ("live.symbol", "exec.pair", "md.pair", "impact.symbol"):
+        value = str(_cfg(cfg, path, "") or "").strip()
+        if value:
+            raw = value
+            break
+    pair = raw.upper()
+    normalized = pair.replace("-", "/").replace("_", "/")
+    symbol = normalized.split("/", 1)[0].strip().upper() if normalized else ""
+    return pair, symbol
 
 
 def _estimate_position_bars_from_entry_ts(entry_ts_raw: Any, sync_ts: datetime, bar_seconds: float) -> int:
@@ -1317,6 +1331,20 @@ def run_core(ctx: ProcessContext) -> None:
         "risk_manager": risk_manager,
         "order_builder": order_builder,
     }
+    observer_pair, observer_symbol = _instrument_pair_and_symbol(cfg)
+    exit_observer_enabled = bool(_cfg(cfg, "analytics.exit_learning_observer.enabled", True))
+    exit_observer = ExitLearningObserver(
+        symbol=observer_symbol,
+        pair=observer_pair,
+        position_epsilon=float(getattr(risk_manager.config, "position_epsilon_btc", 1e-12) or 1e-12),
+    )
+
+    def _emit_exit_observer_events(events: List[Dict[str, Any]]) -> None:
+        if not exit_observer_enabled:
+            return
+        for payload in events:
+            if payload:
+                _send_journal(ctx, "exit_learning_observation", payload)
 
     def _emit_emergency_exit(reason: str) -> None:
         # In trading modes, hard safety stops should flatten any open position immediately.
@@ -1935,6 +1963,7 @@ def run_core(ctx: ProcessContext) -> None:
                     order_seq = 0
                     inflight_order_ids.clear()
                     inflight_exit_order_ids.clear()
+                    exit_observer.reset()
                     ignore_reports_before_ts = cmd.ts
                     budget_cutoff_ts = cmd.ts
 
@@ -2193,6 +2222,16 @@ def run_core(ctx: ProcessContext) -> None:
                         sync_ts=cmd.ts,
                         bar_seconds=md_interval_seconds,
                     )
+                if exit_observer_enabled:
+                    if position_btc <= 0.0:
+                        exit_observer.reset()
+                    elif reference_price > 0.0:
+                        exit_observer.seed_open_position(
+                            ts=_parse_iso_datetime(entry_ts_raw) or cmd.ts,
+                            position=pos,
+                            mark_price=reference_price,
+                            source="sync_account",
+                        )
 
                 _send_journal(
                     ctx,
@@ -2342,7 +2381,23 @@ def run_core(ctx: ProcessContext) -> None:
                     for inflight_id in fill_ids:
                         inflight_order_ids.discard(inflight_id)
                         inflight_exit_order_ids.discard(inflight_id)
+                    observer_before_pos = copy.copy(state_manager.position)
                     state_manager.apply_fill(msg)
+                    if exit_observer_enabled:
+                        try:
+                            _emit_exit_observer_events(
+                                exit_observer.on_fill(
+                                    fill=msg,
+                                    before_position=observer_before_pos,
+                                    after_position=copy.copy(state_manager.position),
+                                )
+                            )
+                        except Exception as exc:
+                            _send_journal(
+                                ctx,
+                                "exit_learning_observer_error",
+                                {"source": "fill", "error": str(exc)},
+                            )
                 elif hasattr(msg, "status"):
                     # keep for telemetry or audit
                     try:
@@ -2468,6 +2523,13 @@ def run_core(ctx: ProcessContext) -> None:
                             "core_position_reference_initialized",
                             {"reference_price": ref, "source": "market_mark"},
                         )
+                        if exit_observer_enabled:
+                            exit_observer.seed_open_position(
+                                ts=event.ts,
+                                position=state_manager.position,
+                                mark_price=ref,
+                                source="position_reference_initialized",
+                            )
 
                     # deterministic pipeline: features -> alpha -> cost -> gate -> risk -> intents
                     features = active_feature_engine.compute(event)
@@ -2736,6 +2798,24 @@ def run_core(ctx: ProcessContext) -> None:
                     gate_decision = active_gate.evaluate(features, cost, effective_edge_bps)
                     pre_state = state_manager.snapshot(event.ts, event.close)
                     _apply_dynamic_sizing(pre_state)
+                    if exit_observer_enabled:
+                        try:
+                            _emit_exit_observer_events(
+                                exit_observer.on_mark(
+                                    ts=event.ts,
+                                    position=pre_state,
+                                    price=event.close,
+                                    expected_cost_bps=float(cost.expected_cost_bps),
+                                    alpha_type=last_alpha_type,
+                                    active_strategy=last_active_strategy or None,
+                                )
+                            )
+                        except Exception as exc:
+                            _send_journal(
+                                ctx,
+                                "exit_learning_observer_error",
+                                {"source": "mark", "error": str(exc)},
+                            )
                     risk = active_risk_manager.decide(
                         pre_state,
                         features,
@@ -2912,6 +2992,25 @@ def run_core(ctx: ProcessContext) -> None:
                                 cooldown_remaining=int(getattr(risk, "cooldown_remaining", 0) or 0),
                             )
 
+                    if exit_observer_enabled:
+                        try:
+                            exit_observer.on_decision(
+                                ts=event.ts,
+                                position=pre_state,
+                                price=event.close,
+                                reason=risk.reason,
+                                target_qty=risk.target_position_btc,
+                                expected_cost_bps=float(cost.expected_cost_bps),
+                                alpha_type=last_alpha_type,
+                                active_strategy=last_active_strategy or None,
+                            )
+                        except Exception as exc:
+                            _send_journal(
+                                ctx,
+                                "exit_learning_observer_error",
+                                {"source": "decision", "error": str(exc)},
+                            )
+
                     if _is_hard_risk_reason(risk.reason):
                         _disable_trading(risk.reason or "risk_hard_stop", propagate=True)
                         disable_seen_this_tick = True
@@ -3066,6 +3165,7 @@ def run_core(ctx: ProcessContext) -> None:
                                     getattr(active_risk_manager, "_corridor_entry_stage_pct", 0.0) or 0.0
                                 ),
                             },
+                            "exit_learning": exit_observer.snapshot() if exit_observer_enabled else None,
                             "intents": [intent.client_id for intent in intents],
                             "max_orders_hit": max_orders_hit,
                             "dropped_market_events": dropped_market_events,
