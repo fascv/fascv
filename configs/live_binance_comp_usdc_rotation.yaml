@@ -133,7 +133,7 @@ alpha:
 risk:
   max_exposure_eur: 20.0
   max_exposure_mode: equity
-  max_exposure_fraction: 0.125
+  max_exposure_fraction: 0.0
   vol_target_bps: 180.0
   daily_loss_limit_eur: 100000.0
   max_drawdown_pct: 100000.0
@@ -231,7 +231,7 @@ order:
   min_trade_btc: 3.0
   slice_count: 1
   cycle_trade_mode: equity
-  cycle_trade_fraction: 0.125
+  cycle_trade_fraction: 0.0
   cycle_trade_eur: 20.0
 execution:
   latency_bars: 0
