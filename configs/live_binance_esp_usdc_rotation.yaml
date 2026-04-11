@@ -121,7 +121,7 @@ alpha:
 risk:
   max_exposure_eur: 6.0
   max_exposure_mode: equity
-  max_exposure_fraction: 0.125
+  max_exposure_fraction: 0.0
   vol_target_bps: 180.0
   daily_loss_limit_eur: 100000.0
   max_drawdown_pct: 100000.0
@@ -211,6 +211,9 @@ risk:
   profit_roll_exit_enabled: true
   profit_roll_arm_eur: 0.1
   profit_roll_retrace_eur: 0.0
+  profit_roll_retrace_pct: 50.0
+  profit_roll_min_retrace_eur: 0.02
+  profit_roll_min_keep_profit_bps: 2.0
   corridor_step_mode_enabled: true
 order:
   type: market
@@ -219,7 +222,7 @@ order:
   min_trade_btc: 3.0
   slice_count: 1
   cycle_trade_mode: equity
-  cycle_trade_fraction: 0.125
+  cycle_trade_fraction: 0.0
   cycle_trade_eur: 6.0
 execution:
   latency_bars: 0

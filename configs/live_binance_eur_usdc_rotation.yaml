@@ -223,6 +223,9 @@ risk:
   profit_roll_exit_enabled: true
   profit_roll_arm_eur: 0.1
   profit_roll_retrace_eur: 0.02
+  profit_roll_retrace_pct: 50.0
+  profit_roll_min_retrace_eur: 0.02
+  profit_roll_min_keep_profit_bps: 2.0
   corridor_step_mode_enabled: true
 order:
   type: market

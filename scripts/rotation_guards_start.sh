@@ -108,11 +108,3 @@ start_lane "resolv" "configs/live_binance_resolv_usdc_rotation.yaml" 8312 18610 
 start_lane "sign" "configs/live_binance_sign_usdc_rotation.yaml" 8306 18310 18320 18330 18340
 start_lane "wlfi" "configs/live_binance_wlfi_usdc_rotation.yaml" 8358 20910 20920 20930 20940
 start_lane "kite" "configs/live_binance_kite_usdc_rotation.yaml" 8020 9010 9020 9030 9040
-start_lane "esp" "configs/live_binance_esp_usdc_rotation.yaml" 8018 8910 8920 8930 8950
-start_lane "pepe" "configs/live_binance_pepe_usdc_rotation.yaml" 8274 16710 16720 16730 16740
-start_lane "doge" "configs/live_binance_doge_usdc_rotation.yaml" 8028 9410 9420 9430 9440
-start_lane "link" "configs/live_binance_link_usdc_rotation.yaml" 8030 9510 9520 9530 9540
-start_lane "bananas31" "configs/live_binance_bananas31_usdc_rotation.yaml" 8308 18410 18420 18430 18440
-start_lane "zama" "configs/live_binance_zama_usdc_rotation.yaml" 8332 19610 19620 19630 19640
-start_lane "btc" "configs/live_binance_btc_usdc_rotation.yaml" 8206 13310 13320 13330 13340
-start_lane "xlm" "configs/live_binance_xlm_usdc_rotation.yaml" 8054 10710 10720 10730 10740
