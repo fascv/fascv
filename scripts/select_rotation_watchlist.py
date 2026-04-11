@@ -3075,6 +3075,24 @@ def main() -> None:
         book_ticker_bulk_error = str(exc).strip() or repr(exc)
     for symbol in candidates:
         market = f"{symbol}{quote_asset}"
+        balance_qty = max(0.0, float(balances.get(symbol, 0.0) or 0.0))
+        precheck_open_notional = 0.0
+        precheck_has_open = False
+        if balance_qty > 0.0:
+            try:
+                book = book_ticker_map.get(market)
+                if book is None:
+                    book_raw = _public_json(f"/api/v3/ticker/bookTicker?symbol={market}")
+                    book = _parse_book_ticker(book_raw)
+                    if book is not None:
+                        book_ticker_fallback_hits += 1
+                bid = float((book or {}).get("bidPrice", 0.0) or 0.0)
+                if bid > 0.0:
+                    precheck_open_notional = balance_qty * bid
+                    precheck_has_open = precheck_open_notional >= 2.0
+            except Exception:
+                precheck_open_notional = 0.0
+                precheck_has_open = False
         auto_blacklist_entry = auto_blacklist_map.get(symbol, {})
         if not isinstance(auto_blacklist_entry, dict):
             auto_blacklist_entry = {}
@@ -3118,13 +3136,16 @@ def main() -> None:
             elif policy_data_unknown:
                 hard_excluded = True
                 hard_reason = "universe_policy_data_unknown"
-        if hard_excluded:
+        # Hard universe blocks prevent new entries, but they must not hide an
+        # already open spot position from the rotation/watch machinery.
+        if hard_excluded and not precheck_has_open:
             rows.append(
                 {
                     "symbol": symbol,
                     "market": market,
                     "score": -50000.0,
                     "setup_type": "blocked",
+                    "open_notional": precheck_open_notional,
                     "keep_open": False,
                     "eligible": False,
                     "gate_reason": hard_reason,

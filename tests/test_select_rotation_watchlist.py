@@ -552,6 +552,98 @@ class TestSelectRotationWatchlist(unittest.TestCase):
         self.assertEqual(row["hard_exclusion_reason"], "universe_policy_data_unknown")
         self.assertEqual(row["gate_reason"], "universe_policy_data_unknown")
 
+    def test_main_keeps_open_balance_despite_universe_policy_block(self) -> None:
+        args = argparse.Namespace(
+            setup_mode="trend",
+            universe_source="pool",
+            quote_asset="USDC",
+            symbols="TEST",
+            ignore_balances=False,
+        )
+        btc_klines = self._build_klines(start=50000.0, step=3.0, quote_volume=5000.0)
+        symbol_klines = self._build_klines(start=1.0, step=0.002, quote_volume=500.0)
+        structure = self._market_structure(phase="stall")
+        stdout = io.StringIO()
+
+        with (
+            patch.dict(select_rotation_watchlist.os.environ, {}, clear=True),
+            patch.object(select_rotation_watchlist, "_load_env"),
+            patch.object(select_rotation_watchlist, "_parse_args", return_value=args),
+            patch.object(
+                select_rotation_watchlist,
+                "_resolve_candidates",
+                return_value=(["TEST"], "explicit_symbols"),
+            ),
+            patch.object(
+                select_rotation_watchlist,
+                "_signed_get",
+                return_value={
+                    "balances": [
+                        {"asset": "TEST", "free": "50", "locked": "0"},
+                    ]
+                },
+            ),
+            patch.object(
+                select_rotation_watchlist,
+                "_build_universe_policy",
+                return_value=(
+                    {
+                        "TESTUSDC": {
+                            "is_monitoring": False,
+                            "monitoring_tags": [],
+                            "is_problem": False,
+                            "problem_reasons": [],
+                            "monitoring_data_unknown": True,
+                            "problem_data_unknown": True,
+                            "policy_data_unknown": True,
+                        }
+                    },
+                    {},
+                ),
+            ),
+            patch.object(
+                select_rotation_watchlist,
+                "_build_auto_blacklist",
+                return_value=({}, {"enabled": True}),
+            ),
+            patch.object(select_rotation_watchlist, "_load_slope_profiles", return_value={}),
+            patch.object(
+                select_rotation_watchlist,
+                "_get_book_ticker_map",
+                return_value={
+                    "TESTUSDC": {
+                        "bidPrice": 2.199,
+                        "askPrice": 2.201,
+                        "bidQty": 60.0,
+                        "askQty": 60.0,
+                    }
+                },
+            ),
+            patch.object(
+                select_rotation_watchlist,
+                "_get_klines",
+                side_effect=lambda market, **kwargs: btc_klines if market == "BTCUSDC" else symbol_klines,
+            ),
+            patch.object(
+                select_rotation_watchlist,
+                "classify_market_structure",
+                return_value=structure,
+            ),
+            redirect_stdout(stdout),
+        ):
+            select_rotation_watchlist.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["errors_total"], 0)
+        self.assertEqual(len(payload["rows"]), 1)
+        row = payload["rows"][0]
+        self.assertEqual(row["symbol"], "TEST")
+        self.assertTrue(row["keep_open"])
+        self.assertTrue(row["eligible"])
+        self.assertFalse(row["hard_excluded"])
+        self.assertEqual(row["gate_reason"], "keep_open")
+        self.assertGreater(row["open_notional"], 2.0)
+
     def test_main_processes_stall_rows_without_unbound_macro_context(self) -> None:
         args = argparse.Namespace(
             setup_mode="trend",
