@@ -963,6 +963,9 @@ def _profile_values(name: str) -> dict[str, float | int]:
         ("ROTATION_PROFIT_ROLL_EXIT_ENABLED", "profit_roll_exit_enabled"),
         ("ROTATION_PROFIT_ROLL_ARM_EUR", "profit_roll_arm_eur"),
         ("ROTATION_PROFIT_ROLL_RETRACE_EUR", "profit_roll_retrace_eur"),
+        ("ROTATION_PROFIT_ROLL_RETRACE_PCT", "profit_roll_retrace_pct"),
+        ("ROTATION_PROFIT_ROLL_MIN_RETRACE_EUR", "profit_roll_min_retrace_eur"),
+        ("ROTATION_PROFIT_ROLL_MIN_KEEP_PROFIT_BPS", "profit_roll_min_keep_profit_bps"),
         ("ROTATION_SWING_LOOKBACK_BARS", "swing_lookback_bars"),
         ("ROTATION_SWING_BUY_BAND", "swing_buy_band"),
         ("ROTATION_SWING_SELL_BAND", "swing_sell_band"),
@@ -1039,6 +1042,9 @@ def _profile_values(name: str) -> dict[str, float | int]:
     profile.setdefault("profit_roll_exit_enabled", 0.0)
     profile.setdefault("profit_roll_arm_eur", 0.0)
     profile.setdefault("profit_roll_retrace_eur", 0.0)
+    profile.setdefault("profit_roll_retrace_pct", 50.0)
+    profile.setdefault("profit_roll_min_retrace_eur", 0.02)
+    profile.setdefault("profit_roll_min_keep_profit_bps", 2.0)
     profile.setdefault("alpha_type", "continuation")
     profile.setdefault("swing_min_range_bps", 52.0)
     profile.setdefault("swing_micro_rebound_max_spread_bps", 8.0)
@@ -2570,6 +2576,20 @@ def _set_fraction(
     profit_roll_retrace_eur = max(
         0.0, float(profile.get("profit_roll_retrace_eur", 0.0) or 0.0)
     )
+    profit_roll_retrace_pct_raw = profile.get("profit_roll_retrace_pct", 50.0)
+    profit_roll_retrace_pct = max(
+        0.0,
+        min(
+            100.0,
+            float(50.0 if profit_roll_retrace_pct_raw is None else profit_roll_retrace_pct_raw),
+        ),
+    )
+    profit_roll_min_retrace_eur = max(
+        0.0, float(profile.get("profit_roll_min_retrace_eur", 0.02) or 0.0)
+    )
+    profit_roll_min_keep_profit_bps = max(
+        0.0, float(profile.get("profit_roll_min_keep_profit_bps", 2.0) or 0.0)
+    )
     # Keep EUR/USDC on absolute roll mode with a practical retrace threshold.
     # The global selector profile still uses retrace=0.0 for legacy lanes.
     if symbol.upper() == "EUR" and profit_roll_arm_eur > 0.0 and profit_roll_retrace_eur <= 0.0:
@@ -3555,6 +3575,9 @@ def _set_fraction(
                 )
                 lines.append(f"  profit_roll_arm_eur: {profit_roll_arm_eur}")
                 lines.append(f"  profit_roll_retrace_eur: {profit_roll_retrace_eur}")
+                lines.append(f"  profit_roll_retrace_pct: {profit_roll_retrace_pct}")
+                lines.append(f"  profit_roll_min_retrace_eur: {profit_roll_min_retrace_eur}")
+                lines.append(f"  profit_roll_min_keep_profit_bps: {profit_roll_min_keep_profit_bps}")
                 lines.append(
                     "  corridor_step_mode_enabled: "
                     + ("true" if corridor_staged_mode_enabled else "false")
@@ -3567,6 +3590,12 @@ def _set_fraction(
         elif section == "risk" and stripped.startswith("profit_roll_arm_eur:"):
             continue
         elif section == "risk" and stripped.startswith("profit_roll_retrace_eur:"):
+            continue
+        elif section == "risk" and stripped.startswith("profit_roll_retrace_pct:"):
+            continue
+        elif section == "risk" and stripped.startswith("profit_roll_min_retrace_eur:"):
+            continue
+        elif section == "risk" and stripped.startswith("profit_roll_min_keep_profit_bps:"):
             continue
         elif section == "risk" and stripped.startswith("corridor_step_mode_enabled:"):
             continue

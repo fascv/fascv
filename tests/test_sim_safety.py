@@ -1574,6 +1574,129 @@ class TestSimSafety(unittest.TestCase):
         self.assertGreater(d4.target_position_btc, 0.0)
         self.assertEqual(d5.reason, "trailing_stop")
 
+    def test_profit_roll_exit_locks_peak_share_above_cost_floor(self) -> None:
+        from trading.types import AccountState
+
+        cfg = RiskConfig(
+            max_exposure_eur=20.0,
+            vol_target_bps=100.0,
+            daily_loss_limit_eur=1000.0,
+            max_drawdown_pct=90.0,
+            cooldown_bars=1,
+            allow_short=False,
+            full_position_only=True,
+            use_vol_scaling=False,
+            use_gate_size_factor=False,
+            exit_edge_bps=-100.0,
+            min_exit_profit_bps=14.0,
+            profit_roll_exit_enabled=True,
+            profit_roll_arm_eur=0.10,
+            profit_roll_retrace_eur=0.0,
+            profit_roll_retrace_pct=50.0,
+            profit_roll_min_retrace_eur=0.02,
+            profit_roll_min_keep_profit_bps=2.0,
+        )
+        rm = RiskManager(cfg)
+        ts = datetime(2026, 3, 14, tzinfo=timezone.utc)
+        state = AccountState(
+            ts=ts,
+            cash_eur=0.0,
+            position_btc=20.0,
+            avg_entry_price=1.0,
+            realized_pnl_eur=0.0,
+            equity_eur=20.0,
+            peak_equity_eur=20.0,
+            drawdown_pct=0.0,
+            day_start_equity_eur=20.0,
+        )
+        gate = GateDecision(ts=ts, allow=True, size_factor=1.0, reason=None)
+
+        d_peak = rm.decide(
+            state,
+            Features(ts=ts, values={"price": 1.0060, "atr_bps": 10.0}),
+            gate,
+            predicted_edge_bps=20.0,
+            expected_cost_bps=14.0,
+            regime="trend",
+        )
+        d_tiny_pullback = rm.decide(
+            state,
+            Features(ts=ts, values={"price": 1.0058, "atr_bps": 10.0}),
+            gate,
+            predicted_edge_bps=20.0,
+            expected_cost_bps=14.0,
+            regime="trend",
+        )
+        d_roll = rm.decide(
+            state,
+            Features(ts=ts, values={"price": 1.0030, "atr_bps": 10.0}),
+            gate,
+            predicted_edge_bps=20.0,
+            expected_cost_bps=14.0,
+            regime="trend",
+        )
+
+        self.assertEqual(d_peak.reason, "hold_full_position")
+        self.assertEqual(d_tiny_pullback.reason, "hold_full_position")
+        self.assertEqual(d_roll.reason, "profit_roll_exit")
+        self.assertEqual(d_roll.target_position_btc, 0.0)
+
+    def test_profit_roll_exit_respects_cost_floor(self) -> None:
+        from trading.types import AccountState
+
+        cfg = RiskConfig(
+            max_exposure_eur=20.0,
+            vol_target_bps=100.0,
+            daily_loss_limit_eur=1000.0,
+            max_drawdown_pct=90.0,
+            cooldown_bars=1,
+            allow_short=False,
+            full_position_only=True,
+            use_vol_scaling=False,
+            use_gate_size_factor=False,
+            exit_edge_bps=-100.0,
+            profit_roll_exit_enabled=True,
+            profit_roll_arm_eur=0.10,
+            profit_roll_retrace_eur=0.0,
+            profit_roll_retrace_pct=50.0,
+            profit_roll_min_retrace_eur=0.02,
+            profit_roll_min_keep_profit_bps=2.0,
+        )
+        rm = RiskManager(cfg)
+        ts = datetime(2026, 3, 14, tzinfo=timezone.utc)
+        state = AccountState(
+            ts=ts,
+            cash_eur=0.0,
+            position_btc=20.0,
+            avg_entry_price=1.0,
+            realized_pnl_eur=0.0,
+            equity_eur=20.0,
+            peak_equity_eur=20.0,
+            drawdown_pct=0.0,
+            day_start_equity_eur=20.0,
+        )
+        gate = GateDecision(ts=ts, allow=True, size_factor=1.0, reason=None)
+
+        rm.decide(
+            state,
+            Features(ts=ts, values={"price": 1.0060, "atr_bps": 10.0}),
+            gate,
+            predicted_edge_bps=20.0,
+            expected_cost_bps=14.0,
+            regime="trend",
+        )
+        d_below_floor = rm.decide(
+            state,
+            Features(ts=ts, values={"price": 1.0015, "atr_bps": 10.0}),
+            gate,
+            predicted_edge_bps=20.0,
+            expected_cost_bps=14.0,
+            regime="trend",
+        )
+
+        self.assertEqual(d_below_floor.reason, "hold_full_position")
+        self.assertEqual(d_below_floor.target_position_btc, state.position_btc)
+
     def test_entry_requires_cost_buffer(self) -> None:
         from trading.types import AccountState
 

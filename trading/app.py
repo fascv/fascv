@@ -192,6 +192,11 @@ def build_pipeline(
             profit_roll_exit_enabled=bool(_cfg(cfg, "risk.profit_roll_exit_enabled", False)),
             profit_roll_arm_eur=float(_cfg(cfg, "risk.profit_roll_arm_eur", 0.0)),
             profit_roll_retrace_eur=float(_cfg(cfg, "risk.profit_roll_retrace_eur", 0.0)),
+            profit_roll_retrace_pct=float(_cfg(cfg, "risk.profit_roll_retrace_pct", 50.0)),
+            profit_roll_min_retrace_eur=float(_cfg(cfg, "risk.profit_roll_min_retrace_eur", 0.02)),
+            profit_roll_min_keep_profit_bps=float(
+                _cfg(cfg, "risk.profit_roll_min_keep_profit_bps", 2.0)
+            ),
             reentry_min_move_bps=float(_cfg(cfg, "risk.reentry_min_move_bps", 0.0)),
             reentry_require_price_at_or_below_last_entry=bool(
                 _cfg(cfg, "risk.reentry_require_price_at_or_below_last_entry", False)

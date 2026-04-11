@@ -137,10 +137,14 @@ class RiskConfig:
     peak_profit_retrace_pct: float = 0.0
     # Absolute-profit rolling exit:
     # arm after open PnL (quote currency) reaches arm_eur, then flatten when
-    # open PnL retraces by at least retrace_eur from its local peak.
+    # open PnL retraces from its local peak. A positive retrace_eur keeps the
+    # legacy fixed-EUR behavior; otherwise retrace_pct locks a share of the peak.
     profit_roll_exit_enabled: bool = False
     profit_roll_arm_eur: float = 0.0
     profit_roll_retrace_eur: float = 0.0
+    profit_roll_retrace_pct: float = 50.0
+    profit_roll_min_retrace_eur: float = 0.02
+    profit_roll_min_keep_profit_bps: float = 2.0
     # After a trailing-stop exit, block same-symbol re-entry for N completed bars.
     reentry_cooldown_bars_after_trailing_stop: int = 0
     # After a very short hard-stop-loss whipsaw, block same-symbol re-entry for N completed bars.
@@ -525,6 +529,22 @@ class RiskManager:
         profit_roll_arm_eur = max(0.0, float(getattr(self.config, "profit_roll_arm_eur", 0.0) or 0.0))
         profit_roll_retrace_eur = max(
             0.0, float(getattr(self.config, "profit_roll_retrace_eur", 0.0) or 0.0)
+        )
+        profit_roll_retrace_pct_raw = getattr(self.config, "profit_roll_retrace_pct", 50.0)
+        profit_roll_retrace_pct = max(
+            0.0,
+            min(
+                100.0,
+                float(50.0 if profit_roll_retrace_pct_raw is None else profit_roll_retrace_pct_raw),
+            ),
+        )
+        profit_roll_min_retrace_eur = max(
+            0.0,
+            float(getattr(self.config, "profit_roll_min_retrace_eur", 0.02) or 0.0),
+        )
+        profit_roll_min_keep_profit_bps = max(
+            0.0,
+            float(getattr(self.config, "profit_roll_min_keep_profit_bps", 2.0) or 0.0),
         )
         reentry_cooldown_bars_after_trailing_stop = max(
             0,
@@ -1152,6 +1172,17 @@ class RiskManager:
                 return True
             return price >= required_price
 
+        def _cost_floor_exit_ok(extra_profit_bps: float = 0.0) -> bool:
+            if price <= 0.0:
+                return True
+            avg_entry = float(getattr(state, "avg_entry_price", 0.0) or 0.0)
+            if avg_entry <= 0.0:
+                return True
+            need_bps = max(0.0, float(expected_cost_bps or 0.0)) + max(
+                0.0, float(extra_profit_bps or 0.0)
+            )
+            return price >= avg_entry * (1.0 + (need_bps / 10000.0))
+
         def _hard_take_profit_hit() -> bool:
             if pos <= eps:
                 return False
@@ -1368,9 +1399,20 @@ class RiskManager:
             peak_pnl_eur = (peak - avg_entry) * pos
             if peak_pnl_eur < profit_roll_arm_eur:
                 return False
-            if open_pnl_eur >= peak_pnl_eur - max(0.0, profit_roll_retrace_eur):
+            if profit_roll_retrace_eur > 0.0:
+                retrace_need_eur = max(profit_roll_retrace_eur, profit_roll_min_retrace_eur)
+            else:
+                retrace_need_eur = max(
+                    peak_pnl_eur * (profit_roll_retrace_pct / 100.0),
+                    profit_roll_min_retrace_eur,
+                )
+            if retrace_need_eur <= 0.0:
+                return False
+            if open_pnl_eur > peak_pnl_eur - retrace_need_eur:
                 return False
             if _campaign_hold_active():
+                return False
+            if not _cost_floor_exit_ok(profit_roll_min_keep_profit_bps):
                 return False
             return True
 
