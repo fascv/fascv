@@ -2184,15 +2184,20 @@ def load_rotation_live() -> dict[str, Any]:
                     )
                     rows.append(row)
 
-        def sort_key(row: dict[str, Any]) -> tuple[int, int, int, int, int, int, str]:
+        def sort_key(row: dict[str, Any]) -> tuple[int, str, int, int, int, int, int, str]:
+            symbol = str(row.get("symbol", ""))
+            in_trade = bool(row.get("currentlyTrading")) or bool(row.get("positionOpen")) or int(
+                row.get("openOrdersCount", 0)
+            ) > 0
             return (
-                0 if bool(row.get("currentlyTrading")) else 1,
+                0 if in_trade else 1,
+                symbol if in_trade else "",
                 0 if bool(row.get("selected")) else 1,
                 0 if bool(row.get("running")) else 1,
                 0 if bool(row.get("statusOk")) else 1,
                 0 if not bool(row.get("stale")) else 1,
                 -int(bool(row.get("eligible"))),
-                str(row.get("symbol", "")),
+                symbol,
             )
 
         rows.sort(key=sort_key)

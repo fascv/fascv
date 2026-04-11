@@ -36,8 +36,8 @@
   const REPORT_SYMBOL_KEY = 'relay_report_symbol';
   const MIN_REPORT_LOAD_INTERVAL_MS = 20000;
   const MIN_ROTATION_LOAD_INTERVAL_MS = 8000;
-  const MIN_LIVE_LOAD_INTERVAL_MS = 2500;
-  const LIVE_REFRESH_INTERVAL_MS = 6000;
+  const MIN_LIVE_LOAD_INTERVAL_MS = 5000;
+  const LIVE_REFRESH_INTERVAL_MS = 10000;
   let lastReportLoadAtMs = 0;
   let lastRotationLoadAtMs = 0;
   let lastLiveLoadAtMs = 0;
@@ -230,7 +230,9 @@
     }
 
     if (showReady && item.tradeReady && !item.currentlyTrading) badges.push('<span class="badge ok">Ready</span>');
-    if (showManualEntry && item.manualEntryExitOnly) badges.push('<span class="badge warn">Manuell Entry</span>');
+    if (showManualEntry && item.manualEntryExitOnly && !item.currentlyTrading) {
+      badges.push('<span class="badge warn">Manuell Entry</span>');
+    }
     if (item.stale) badges.push('<span class="badge warn">Stale</span>');
     if (Number(item.openOrdersCount || 0) > 0) {
       badges.push(`<span class="badge warn">${Number(item.openOrdersCount || 0)} Order</span>`);
@@ -323,14 +325,21 @@
   }
 
   function liveTuple(item) {
+    const inTrade = Boolean(
+      item?.currentlyTrading ||
+      item?.positionOpen ||
+      Number(item?.openOrdersCount || 0) > 0
+    );
+    const symbol = String(item?.symbol || '');
     return [
-      item?.currentlyTrading ? 0 : 1,
+      inTrade ? 0 : 1,
+      inTrade ? symbol : '',
       item?.selected ? 0 : 1,
       item?.running ? 0 : 1,
       item?.statusOk ? 0 : 1,
       item?.stale ? 1 : 0,
       -Number(item?.openOrdersCount || 0),
-      String(item?.symbol || ''),
+      symbol,
     ];
   }
 
@@ -752,7 +761,7 @@
   function liveGateText(item) {
     if (!item.statusOk) return item.statusError || 'Down';
     if (item.gateReason) return item.gateReason;
-    if (item.manualEntryExitOnly) return 'manuell_entry_only';
+    if (item.manualEntryExitOnly && !item.currentlyTrading) return 'manuell_entry_only';
     return item.tradingEnabled ? 'frei' : 'trading_disabled';
   }
 
