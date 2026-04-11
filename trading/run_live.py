@@ -47,7 +47,7 @@ def run_live(config_path: str, mode: str) -> Dict[str, Any]:
             )
         )
     else:
-        pair = _cfg(cfg, "live.kraken_pair", "XBT/EUR")
+        pair = _cfg(cfg, "live.kraken_pair", "BTC/EUR")
         ws_url = _cfg(cfg, "live.websocket_url", "wss://ws.kraken.com/v2")
         data_source = KrakenWebSocketDataSource(pair=pair, url=ws_url)
         execution = KrakenRestExecutionAdapter(

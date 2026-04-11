@@ -1,0 +1,16 @@
+alpha:
+  lookback: 10
+  threshold_bps: 4.0
+  scale: 2.0
+gate:
+  safety_margin_bps: 0.5
+  max_spread_bps: 12.0
+  max_atr_bps: 180.0
+risk:
+  cooldown_bars: 6
+  vol_target_bps: 160.0
+  use_vol_scaling: true
+  use_gate_size_factor: true
+  entry_edge_bps: 6.0
+  exit_edge_bps: -3.0
+  min_hold_bars: 6

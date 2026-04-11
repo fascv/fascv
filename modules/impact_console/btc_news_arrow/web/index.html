@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BTC News Arrow Console</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260214b" />
+  </head>
+  <body>
+    <div class="bg-shape bg-shape-a"></div>
+    <div class="bg-shape bg-shape-b"></div>
+
+    <main class="shell">
+      <header class="hero reveal">
+        <p class="kicker">BTC NEWS ARROW</p>
+        <h1>Impact Console</h1>
+        <p class="subline">
+          Nur Signal: automatische News-Aggregation mit Richtung und Staerke.
+        </p>
+      </header>
+
+      <section class="panel reveal" id="live-panel">
+        <div class="panel-head">
+          <h2>Live Signal</h2>
+          <div class="controls">
+            <label class="toggle">
+              <input id="toggle-reasons" type="checkbox" checked />
+              Top-3 Gruende
+            </label>
+          </div>
+        </div>
+        <p class="meta">Last update: <span id="last-update">-</span></p>
+
+        <div class="cards" id="arrow-cards">
+          <article class="arrow-card" data-window="1h">
+            <p class="label">1h</p>
+            <p class="arrow" id="arrow-1h">-</p>
+            <p class="trend" id="trend-1h">Neutral</p>
+            <p class="score" id="score-1h">score -</p>
+            <div class="plain-box">
+              <p class="plain-head">Was bedeutet das?</p>
+              <p class="plain-text" id="plain-1h">Noch keine Bewertung.</p>
+              <p class="plain-meta" id="plain-meta-1h">-</p>
+            </div>
+            <ul class="reasons hidden" id="reasons-1h"></ul>
+          </article>
+          <article class="arrow-card" data-window="24h">
+            <p class="label">24h</p>
+            <p class="arrow" id="arrow-24h">-</p>
+            <p class="trend" id="trend-24h">Neutral</p>
+            <p class="score" id="score-24h">score -</p>
+            <div class="plain-box">
+              <p class="plain-head">Was bedeutet das?</p>
+              <p class="plain-text" id="plain-24h">Noch keine Bewertung.</p>
+              <p class="plain-meta" id="plain-meta-24h">-</p>
+            </div>
+            <ul class="reasons hidden" id="reasons-24h"></ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel reveal" id="reports-panel">
+        <div class="panel-head">
+          <h2>System Reports</h2>
+        </div>
+        <p class="meta">Diagnostics update: <span id="reports-update">-</span></p>
+        <div class="report-grid">
+          <article class="report-card">
+            <p class="label">Hybrid Eval</p>
+            <p class="trend" id="report-hybrid-status">-</p>
+            <p class="plain-meta" id="report-hybrid-meta">Kein Report geladen.</p>
+          </article>
+          <article class="report-card">
+            <p class="label">Source Quality</p>
+            <p class="trend" id="report-source-status">-</p>
+            <p class="plain-meta" id="report-source-meta">Kein Report geladen.</p>
+          </article>
+          <article class="report-card">
+            <p class="label">Alerts</p>
+            <p class="trend" id="report-alerts-status">-</p>
+            <p class="plain-meta" id="report-alerts-meta">Kein Report geladen.</p>
+            <ul class="reasons" id="report-alert-list"></ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel reveal" id="forensic-panel">
+        <div class="panel-head">
+          <h2>Forensic</h2>
+        </div>
+        <p class="meta">
+          Forensic zeigt Regel-Impact je Meldung plus den decayed Regel-Beitrag zum gewählten Timestamp (kein LLM-Event-Beitrag).
+        </p>
+
+        <form id="forensic-form" class="forensic-form">
+          <label>
+            Timestamp (UTC)
+            <input
+              id="ts-input"
+              name="ts"
+              type="text"
+              placeholder="2026-02-06T00:10:00Z"
+              required
+            />
+          </label>
+          <label>
+            Plus/Minus
+            <input id="window-input" name="window" type="text" value="24h" required />
+          </label>
+          <button type="submit" class="btn btn-primary">Load Forensic</button>
+        </form>
+
+        <p class="meta" id="forensic-meta">Items: -</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>UTC</th>
+                <th>Source</th>
+                <th>Cat</th>
+                <th>Rule Impact</th>
+                <th>Beitrag @TS</th>
+                <th>Title</th>
+              </tr>
+            </thead>
+            <tbody id="forensic-body">
+              <tr>
+                <td colspan="6" class="placeholder">Noch keine Abfrage.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script src="/static/app.js?v=20260221a"></script>
+  </body>
+</html>

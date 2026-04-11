@@ -1,0 +1,7 @@
+[Unit]
+Description=Codex Rotation Meta Shadow Controller
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/andi/Schreibtisch/codex/bitcoin2
+ExecStart=/bin/bash -lc 'python3 scripts/rotation_meta_shadow.py'

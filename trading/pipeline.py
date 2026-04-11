@@ -16,6 +16,32 @@ from trading.risk.sizing import RiskManager
 from trading.types import AccountState, BacktestResult, Fill, MarketEvent
 
 
+def _inject_alpha_features(features: Any, alpha_meta: Dict[str, Any]) -> None:
+    structure = alpha_meta.get("structure") if isinstance(alpha_meta.get("structure"), dict) else {}
+    active_leg = str(structure.get("active_leg") or "").strip().lower()
+    continuation_state = str(alpha_meta.get("continuation_state") or "").strip().lower()
+    breakout_state = str(alpha_meta.get("breakout_state") or "").strip().lower()
+    features.values["alpha_up_structure"] = 1.0 if bool(structure.get("up_structure")) else 0.0
+    features.values["alpha_down_structure"] = 1.0 if bool(structure.get("down_structure")) else 0.0
+    features.values["alpha_active_leg_rise"] = 1.0 if active_leg == "rise" else 0.0
+    features.values["alpha_staircase_override"] = 1.0 if continuation_state == "staircase_override" else 0.0
+    features.values["alpha_impulse_override"] = 1.0 if continuation_state == "impulse_override" else 0.0
+    features.values["alpha_structure_range_pos"] = float(structure.get("range_pos") or 0.0)
+    features.values["alpha_structure_slope_short_bps"] = float(structure.get("slope_short_bps") or 0.0)
+    features.values["alpha_structure_drawdown_from_peak_bps"] = float(
+        structure.get("drawdown_from_peak_bps") or 0.0
+    )
+    features.values["alpha_recent_bias_bps"] = float(alpha_meta.get("recent_bias_bps") or 0.0)
+    features.values["alpha_campaign_hold_bias"] = 1.0 if continuation_state in {
+        "staircase_override",
+        "impulse_override",
+    } else 0.0
+    features.values["alpha_breakout_state_up"] = 1.0 if breakout_state == "up_breakout" else 0.0
+    features.values["alpha_breakout_state_down"] = 1.0 if breakout_state == "down_breakout" else 0.0
+    features.values["alpha_breakout_up_bps"] = float(alpha_meta.get("breakout_up_bps") or 0.0)
+    features.values["alpha_breakout_down_bps"] = float(alpha_meta.get("breakout_down_bps") or 0.0)
+
+
 class TradingPipeline:
     def __init__(
         self,
@@ -91,15 +117,40 @@ class TradingPipeline:
         for event in self.data_source:
             features = self.feature_engine.compute(event)
             alpha = self.alpha_model.predict(features)
+            _inject_alpha_features(features, alpha.meta if isinstance(alpha.meta, dict) else {})
             cost = self.cost_model.estimate(features, self.order_builder.config.order_type)
             gate = self.gate.evaluate(features, cost, alpha.edge_bps)
 
             pre_state = self.state_manager.snapshot(event.ts, event.close)
-            risk = self.risk_manager.decide(pre_state, features, gate, alpha.edge_bps)
+            risk = self.risk_manager.decide(
+                pre_state,
+                features,
+                gate,
+                alpha.edge_bps,
+                expected_cost_bps=float(cost.expected_cost_bps),
+                regime=str((alpha.meta or {}).get("regime", "")).strip().lower() or None,
+            )
 
             orders = []
             if risk.allow:
-                orders = self.order_builder.build(risk, pre_state.position_btc, event.close)
+                buy_fee_bps = float(getattr(cost, "fee_bps", 0.0) or 0.0)
+                buy_price_buffer_bps = 0.0
+                try:
+                    # Match the simulator's market fill model (close +/- spread/2 +/- slippage).
+                    spread_bps = float(features.values.get("spread_bps", 0.0))
+                    slip_bps = float(getattr(getattr(self.execution, "config", None), "slippage_bps", 0.0) or 0.0)
+                    if str(getattr(self.order_builder.config, "order_type", "market") or "market") == "market":
+                        buy_price_buffer_bps = spread_bps / 2.0 + slip_bps
+                except Exception:
+                    buy_price_buffer_bps = 0.0
+                orders = self.order_builder.build(
+                    risk,
+                    pre_state.position_btc,
+                    event.close,
+                    cash_eur=pre_state.cash_eur,
+                    buy_fee_bps=buy_fee_bps,
+                    buy_price_buffer_bps=buy_price_buffer_bps,
+                )
             self.execution.submit(orders)
             fills = self.execution.process(event, spread_bps=features.values.get("spread_bps", 0.0))
             for fill in fills:

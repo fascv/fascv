@@ -1,0 +1,7 @@
+alpha:
+  type: breakout
+  breakout:
+    lookback: 36
+    trigger_bps: 12.0
+    scale: 0.5
+    max_edge_bps: 300.0

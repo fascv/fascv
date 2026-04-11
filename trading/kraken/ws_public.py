@@ -153,6 +153,22 @@ class KrakenWSV2MarketData:
                 if isinstance(msg, dict) and msg.get("channel") == "book":
                     self._handle_book_message(msg)
                     last_book_msg_time = now
+                    # Kraken WS v2 trade updates can be sparse; use book mid as a price tick so we can
+                    # still emit OHLC bars at a steady cadence.
+                    if self.book.bids and self.book.asks:
+                        raw_ts = None
+                        data = msg.get("data")
+                        if isinstance(data, list) and data and isinstance(data[-1], dict):
+                            raw_ts = data[-1].get("timestamp")
+                        ts = self._parse_ws_ts(raw_ts) or datetime.now(timezone.utc)
+                        best_bid = max(self.book.bids.keys())
+                        best_ask = min(self.book.asks.keys())
+                        mid = (best_bid + best_ask) / Decimal("2")
+                        pseudo = Trade(ts=ts, price=mid, volume=Decimal("0"), trade_id=None)
+                        event = agg.update(pseudo)
+                        if event is not None:
+                            event.micro = self.book.micro_features()
+                            yield event
                     self._check_stale(now, last_any_msg_time, last_book_msg_time, last_trade_msg_time)
                     continue
                 if isinstance(msg, dict) and msg.get("channel") == "trade":
@@ -180,7 +196,23 @@ class KrakenWSV2MarketData:
         if self.stale_book_seconds > 0 and (now - last_book_msg_time) > self.stale_book_seconds:
             raise StaleDataError("book stale")
         if self.stale_trade_seconds > 0 and (now - last_trade_msg_time) > self.stale_trade_seconds:
-            raise StaleDataError("trade stale")
+            # If the book is healthy, we can still produce a usable price stream from it.
+            if not self.book.bids or not self.book.asks:
+                raise StaleDataError("trade stale")
+
+    @staticmethod
+    def _parse_ws_ts(raw_ts: Any) -> Optional[datetime]:
+        if raw_ts is None:
+            return None
+        if isinstance(raw_ts, datetime):
+            return raw_ts.astimezone(timezone.utc)
+        if isinstance(raw_ts, str) and raw_ts:
+            # WS v2 uses RFC3339 strings like "2026-02-14T23:25:05.566853Z".
+            return datetime.fromisoformat(raw_ts.replace("Z", "+00:00")).astimezone(timezone.utc)
+        try:
+            return datetime.fromtimestamp(float(raw_ts), tz=timezone.utc)
+        except Exception:
+            return None
 
     async def _subscribe(self, ws) -> None:
         payload = {
@@ -198,17 +230,35 @@ class KrakenWSV2MarketData:
             "params": {
                 "channel": "trade",
                 "symbol": [self.pair],
-                "snapshot": False,
+                # Kraken WS v2 appears to only emit trade updates after an initial snapshot.
+                "snapshot": True,
             },
         }
         await ws.send(json.dumps(payload))
 
     def _handle_book_message(self, msg: Dict[str, Any]) -> None:
+        def _parse_levels(raw_levels: Any) -> List[Tuple[Decimal, Decimal]]:
+            levels: List[Tuple[Decimal, Decimal]] = []
+            if not isinstance(raw_levels, list):
+                return levels
+            for item in raw_levels:
+                price = None
+                qty = None
+                if isinstance(item, dict):
+                    price = item.get("price")
+                    qty = item.get("qty")
+                elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                    price, qty = item[0], item[1]
+                if price is None or qty is None:
+                    continue
+                levels.append((Decimal(price), Decimal(qty)))
+            return levels
+
         data = msg.get("data", [])
         typ = msg.get("type")
         for entry in data:
-            bids = [(Decimal(p), Decimal(q)) for p, q in entry.get("bids", [])]
-            asks = [(Decimal(p), Decimal(q)) for p, q in entry.get("asks", [])]
+            bids = _parse_levels(entry.get("bids", []))
+            asks = _parse_levels(entry.get("asks", []))
             ts = entry.get("timestamp")
             if typ == "snapshot":
                 self.book.apply_snapshot(bids, asks, ts)
@@ -225,7 +275,7 @@ class KrakenWSV2MarketData:
         trade = data[-1]
         price = Decimal(trade.get("price"))
         qty = Decimal(trade.get("qty"))
-        ts = datetime.fromtimestamp(float(trade.get("timestamp")), tz=timezone.utc)
+        ts = self._parse_ws_ts(trade.get("timestamp")) or datetime.now(timezone.utc)
         trade_id = trade.get("trade_id")
         if trade_id is not None:
             trade_id = int(trade_id)

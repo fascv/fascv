@@ -1,0 +1,18 @@
+[Unit]
+Description=Binance Relay Web Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Schreibtisch/codex/bitcoin2/app/relay-server
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/bin/bash -lc './start-relay.sh'
+Restart=always
+RestartSec=2
+SuccessExitStatus=130 143 SIGINT SIGTERM
+TimeoutStopSec=30
+KillSignal=SIGINT
+
+[Install]
+WantedBy=default.target

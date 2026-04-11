@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Codex Rotation Profit Guard every 5 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Unit=codex-rotation-profit-guard.service
+
+[Install]
+WantedBy=timers.target

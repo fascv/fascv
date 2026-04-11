@@ -26,6 +26,10 @@ gate:
   session_start_utc: 0
   session_end_utc: 24
   stale_seconds: 1800
+  block_on_high_news_impact: false
+  max_news_impact: 0.8
+  max_news_age_sec: 1800
+  news_safety_margin_bps: 0.0
 
 alpha:
   lookback: 3
@@ -53,7 +57,7 @@ execution:
   slippage_bps: 1.0
 
 md:
-  pair: XBT/EUR
+  pair: BTC/EUR
   ws_url: wss://ws.kraken.com/v2
   stale_seconds: 10
   stale_book_seconds: 10
@@ -65,7 +69,7 @@ md:
 
 core:
   trading_enabled: true
-  stale_seconds: 10
+  stale_seconds: 600
   max_orders_per_min: 20
   rate_limit_pause_sec: 2.0
 
@@ -79,6 +83,11 @@ exec:
   deadman_in_paper: false
   rate_limit_pause_sec: 2.0
   owntrades_dedupe_size: 50000
+  # Balance refresh: event-driven after ownTrades, plus a slow safety-net for deposits/withdrawals.
+  balance_refresh_on_owntrades: true
+  balance_refresh_debounce_sec: 30
+  balance_refresh_sec: 900
+  balance_nonzero_only: true
 
 journal:
   db_path: logs/journal.db
@@ -86,12 +95,27 @@ journal:
 
 ipc:
   market_queue_size: 1
+  impact_queue_size: 1
   order_queue_size: 100
   exec_report_queue_size: 200
   journal_queue_size: 10000
   telemetry_queue_size: 1000
   heartbeat_queue_size: 1000
   heartbeat_timeout: 5.0
+
+impact:
+  enabled: false
+  source: api
+  symbol: BTC/EUR
+  interval_seconds: 15
+  timeout_seconds: 3
+  api_url: "http://127.0.0.1:8011/signal/trading?window=1h&mode=auto"
+  file_path: modules/impact_console/diagnostics/arrow_1h.json
+  fallback_to_file: true
+
+news:
+  # Adds an extra edge component in bps: edge += edge_scale_bps * news_sentiment * news_impact
+  edge_scale_bps: 20.0
 
 control:
   enabled: true

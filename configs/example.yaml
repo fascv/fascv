@@ -2,8 +2,15 @@ general:
   starting_cash_eur: 150.0
 
 data:
+  # Training/backtest data source (md live feed is configured separately under `md.*`).
+  # source: csv|sqlite
   source: csv
   path: data/sample_ohlcv.csv
+  # db_path: data/market.db
+  # symbol: XBT/EUR
+  # timeframe: 5m
+  # start: 2025-01-01T00:00:00Z
+  # end: 2025-02-01T00:00:00Z
   default_micro:
     spread_bps: 8.0
     depth: 100000.0
@@ -28,12 +35,18 @@ gate:
   session_start_utc: 0
   session_end_utc: 24
   stale_seconds: 1800
+  block_on_high_news_impact: false
+  max_news_impact: 0.8
+  max_news_age_sec: 1800
+  news_safety_margin_bps: 0.0
 
 alpha:
   type: momentum
   lookback: 3
   threshold_bps: 0.5
   scale: 5.0
+  # Optional: load trained params produced by `python3 -m trading.alpha.train_momentum`.
+  # override_path: configs/alpha_trained.yaml
 
 risk:
   max_exposure_eur: 50.0
@@ -61,9 +74,22 @@ journal:
 report:
   path: reports/report.json
 
+impact:
+  enabled: false
+  source: api
+  symbol: BTC/EUR
+  interval_seconds: 15
+  timeout_seconds: 3
+  api_url: "http://127.0.0.1:8011/signal/trading?window=1h&mode=auto"
+  file_path: modules/impact_console/diagnostics/arrow_1h.json
+  fallback_to_file: true
+
+news:
+  edge_scale_bps: 20.0
+
 # live (stub) settings
 live:
-  kraken_pair: XBT/EUR
+  kraken_pair: BTC/EUR
   websocket_url: wss://ws.kraken.com/v2
   rest_url: https://api.kraken.com
   rate_limit_per_sec: 1.0

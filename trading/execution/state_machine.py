@@ -30,16 +30,15 @@ class OrderStateMachine:
     def state(self, order_id: str) -> Optional[OrderStatus]:
         return self._states.get(order_id)
 
-    def transition(self, order_id: str, new_state: str, ts: datetime) -> bool:
+    def transition(self, order_id: str, new_state: str, ts: datetime, allow_recovery: bool = False) -> bool:
         if new_state not in ALLOWED_TRANSITIONS:
             return False
         current = self._states.get(order_id)
         if current is None:
-            if new_state != "NEW":
-                # allow implicit NEW->X
-                current_state = "NEW"
-            else:
-                current_state = "NEW"
+            if allow_recovery and new_state in {"ACK", "OPEN", "PARTIAL", "FILLED", "CANCELED", "REJECTED"}:
+                self._states[order_id] = OrderStatus(order_id=order_id, state=new_state, updated_at=ts)
+                return True
+            current_state = "NEW"
         else:
             current_state = current.state
         if current_state == new_state:

@@ -1,0 +1,534 @@
+PROJECT START FILE
+As of: 2026-03-16
+
+What this project is
+- This repo runs a Binance USDC rotation trader.
+- It scans a broad Binance `USDC` universe of roughly `135` symbols, builds an inner watch/live pool of up to `28` names, selects up to `4` true active slots, and trades those coins with per-lane runtimes.
+- The system has a local learning layer plus an OpenAI-based meta layer.
+- The OpenAI layer is overgeordnet only. It does not place orders directly.
+
+Main architecture
+- Full USDC universe / shadow scan:
+  - Broad scan and candidate generation over many Binance USDC symbols.
+  - Important scripts:
+    - `scripts/select_rotation_watchlist.py`
+    - `scripts/scan_shadow_usdc_scalp_universe.py`
+- Watch pool:
+  - Up to `28` symbols are kept as the current live watch/watchable pool.
+  - Runtime env file:
+    - `configs/rotation_watch_pool_runtime.env`
+  - Refresh script:
+    - `scripts/rotation_refresh_watch_pool.py`
+- Active slots:
+  - Current architecture is effectively "capital slots", not rigid strategy silos.
+  - Usually 4 slots maximum, capital split across active selections.
+  - Current state file:
+    - `configs/rotation_active_lanes.json`
+- Lane runtimes:
+  - Each selected symbol gets its own generated runtime config under:
+    - `logs/rotation_runtime_configs/`
+  - Apply / reload path:
+    - `scripts/rotation_apply_active_lanes.py`
+  - Core launch / reload path:
+    - `trading/launch.py`
+    - `trading/processes/core.py`
+
+Capital / slot model
+- The broad USDC pool, the watch/live pool, and the 4 active slots are different layers.
+- The practical model is:
+  - about `135` names in the broad USDC universe
+  - up to `28` names in the current watch/live pool
+  - up to `4` names as the true active capital slots
+- The 4 slots exist mainly to split available capital across up to 4 active opportunities.
+- It is valid for fewer than 4 to be active when gates do not allow more.
+- Never treat the symbol snapshot inside this file as current truth.
+- Always read the live state fresh from:
+  - `configs/rotation_active_lanes.json`
+- Important dashboard interpretation:
+  - `selected = true` means one of the active `4`
+  - `running = true` can also include extra watch-pool lanes
+  - seeing more than `4` live rows is not automatically wrong
+
+Strategy layers
+- Meta / selector strategy names are newer and descriptive:
+  - `staircase`
+  - `pullback_continuation`
+  - `breakout_retest`
+  - `relative_strength`
+  - `rebound`
+  - `continuation`
+  - `breakout`
+- Live core alpha families are fewer and simpler:
+  - `trend`
+  - `mean_reversion`
+  - `continuation`
+  - `breakout`
+  - `swing`
+  - `auto`
+- Current mapping that was intentionally implemented:
+  - `staircase -> continuation`
+  - `pullback_continuation -> continuation`
+  - `breakout_retest -> breakout`
+  - `relative_strength -> trend`
+  - `rebound -> swing`
+  - `continuation -> continuation`
+  - `breakout -> breakout`
+
+What the OpenAI layer does
+- OpenAI is used only for the meta-controller layer.
+- It recommends things like:
+  - profile
+  - risk mode
+  - strategy weights
+  - strategy actions / slot preference
+  - candidate overrides
+  - avoid symbols
+- The OpenAI path does not directly trade and should stay overgeordnet.
+- Main files:
+  - `trading/meta/openai_meta.py`
+  - `scripts/rotation_meta_shadow.py`
+- Current OpenAI settings:
+  - model: `gpt-5.1`
+  - minimum OpenAI interval: `15` minutes
+  - timeout: `40` seconds
+- Important:
+  - Local meta / shadow logic still runs every `5` minutes.
+  - OpenAI output is reused between calls.
+
+Learning chain
+- The system learns mainly through the shadow/meta path.
+- Main file:
+  - `trading/meta/rotation_shadow.py`
+- It does not learn from the UI directly.
+- It builds trade samples from real fill events in the lane journals.
+- It also builds no-trade / counterfactual samples for blocked opportunities.
+
+What the learning currently analyzes
+- Realized trade outcomes:
+  - PnL
+  - win rate
+  - hold duration
+  - exit reason
+  - strategy at entry
+- Post-exit path:
+  - `5/15/30/60/120` minute follow-through
+  - missed run after exit
+  - early exit patterns
+  - shakeout-then-run patterns
+  - micro-pop-loss-run patterns
+- Counterfactual no-trades:
+  - blocked setups are followed afterwards to judge whether the block was likely right or too strict
+- Regime / session breakdown:
+  - learning is no longer purely global
+
+Very important learning truth
+- The learning basis is the shadow trade reconstruction, not the dashboard "Live Coins" number.
+- The dashboard can still be wrong or misleading if it shows a current lane-level live value.
+- The learning path should use:
+  - fill-based trade samples from journals
+  - reconstructed trade PnL
+  - post-exit follow-through
+- The learning path should not use:
+  - dashboard live coin PnL
+  - ad-hoc UI totals
+  - manually interpreted open-position values
+
+PnL truth and pitfalls
+- Binance trade history is the closest ground truth.
+- The bot reconstructs PnL locally from Binance-derived fills.
+- Important files:
+  - `trading/binance/rest.py`
+  - `trading/processes/exec.py`
+  - `trading/meta/rotation_shadow.py`
+- Major past bug:
+  - old residual position / sync state could leak into new trade reconstruction
+  - this created false positive strategy PnL in the dashboard and in learning
+- This was already fixed by tightening trade sample extraction and position sync handling.
+- Important consequence:
+  - if a new chat sees strategy PnL on the dashboard, it should not trust it blindly without checking journals / Binance.
+
+Main root cause of losses found so far
+- The biggest recurring problem has not been missing entries.
+- The biggest recurring problem has been too-early exits and repeated re-entry whipsaws.
+- Typical bad pattern:
+  - buy
+  - tiny move
+  - early exit or hard stop
+  - re-buy too soon
+  - another quick loss
+- This pattern appeared on symbols like:
+  - `BANANAS31`
+  - `ALGO`
+  - `ZAMA`
+  - earlier also similar on others
+
+Important fixes already implemented
+
+- Runtime config reloads can switch strategy/alpha state without a full core restart.
+- Selector strategy choices are bridged into executable runtime alpha families.
+- The OpenAI prompt and the learning path now care about too-early exits and blocked no-trades, not only realized PnL.
+- Contaminated trade samples from sync-expanded / mixed campaigns are dropped instead of learned.
+- Restart / sync handling restores the right entry state more reliably after reloads.
+- Small-position / min-notional handling was tightened so the bot does not create unsellable dust trades.
+- Same-symbol re-entry protection exists now as:
+  - weak-exit cooldown
+  - whipsaw hard-stop cooldown
+  - repeated short-loss cluster cooldown
+- The generic lesson from the older BANANAS31-style failures is:
+  - the real issue was not just "cooldown too short"
+  - the real issue was losing flat reentry state across restarts and then re-buying too soon
+
+Selector / market reality
+- Low trade count is often not a broken buy path.
+- It is often:
+  - poor market structure
+  - `edge_below_costs`
+  - bottom / lift-off / post-dump candidates with no clean setup yet
+  - guarded profile being selective
+- Old universe names like `OP`, `HBAR`, `DOT`, `ESP` are not generally "banned".
+- Often they simply fall out of the current top watch ranking because their live structure is weak.
+- The system can run with fewer than 4 active names if gates do not justify more.
+- This is not automatically a bug.
+- Raw selector snapshots may still occasionally contain older meta labels.
+- For live tuning, catalog work, and lab revisions, only treat these as the core strategy targets:
+  - `staircase`
+  - `continuation`
+  - `breakout`
+  - `rebound`
+
+Services / timers worth knowing
+- Selector guard:
+  - `scripts/rotation_selector_guard.sh`
+  - log:
+    - `logs/rotation_selector_guard.log`
+  - if `logs/rotation_selector_guard.disabled` exists, the selector is intentionally blocked from rotating new names
+- Meta / shadow:
+  - `scripts/rotation_meta_shadow.py`
+  - reports:
+    - `logs/rotation_ml_shadow_report.json`
+    - `logs/rotation_openai_shadow_report.json`
+    - `logs/rotation_profile_autotune_report.json`
+- Watch pool refresh:
+  - `scripts/rotation_refresh_watch_pool.py`
+- Relay / dashboard:
+  - `app/relay-server/relay_server.py`
+  - frontend:
+    - `app/relay-server/web/app.js`
+  - live page:
+    - `http://100.67.151.96:8940/`
+  - service:
+    - `systemctl --user status binance-relay.service`
+    - `systemctl --user restart binance-relay.service`
+- Binance trade mirror:
+  - sync script:
+    - `scripts/sync_binance_trade_mirror.py`
+  - coverage audit:
+    - `scripts/audit_trade_mirror_coverage.py`
+    - latest audit artifact:
+      - `logs/trade_mirror_audit.json`
+  - mirror storage:
+    - `logs/binance_trade_mirror/`
+  - timer:
+    - `systemctl --user status binance-trade-mirror.timer`
+    - service:
+      - `systemctl --user status binance-trade-mirror.service`
+  - current mode:
+    - sync runs every `15` minutes via `binance-trade-mirror.timer`
+    - it covers active/watch symbols plus symbols already seen in local rotation journals
+
+Journals and reports that matter most
+- Lane journals:
+  - `logs/journal_live_binance_<symbol>_usdc_rotation.jsonl`
+- Runtime lane configs:
+  - `logs/rotation_runtime_configs/<symbol>_runtime.yaml`
+- Active state:
+  - `configs/rotation_active_lanes.json`
+- Meta runtime:
+  - `configs/rotation_meta_runtime.env`
+- OpenAI meta env:
+  - `configs/rotation_meta_shadow.env`
+
+How to debug a suspicious trade
+1. Check the symbol journal first.
+2. Look for:
+   - `fill` events
+   - `core_decision`
+   - `core_signal`
+   - `core_account_synced`
+   - `exec_core_account_sync`
+3. Confirm:
+   - actual buy / sell times
+   - exit reason
+   - whether state was recovered or restarted in the middle
+4. Check the active runtime config for that symbol.
+5. Only after that compare with Binance trade history.
+
+Known truths for future chats
+- The user cares most about net profit, not abstract elegance.
+- The user does not want the OpenAI layer to trade directly.
+- The biggest historical loss source has been bad exits, not missing entries.
+- "Learning" should not simply make the bot trade less and less.
+- If the bot exits too early, the answer is to improve exit handling, not just ban the entry.
+- Manual interventions should be avoided because they make diagnosis and learning dirtier.
+- If a dashboard number looks wrong, assume it may be a UI/status artifact until proven against journals / Binance.
+
+Important remaining risks / open items
+- OpenAI / Binance secrets are now moved out of the repo into local user env files.
+  - Current local secret paths:
+    - `~/.config/codex/rotation-openai.env`
+    - `~/.config/codex/trading-secrets.env`
+  - Repo env files no longer store the live secrets.
+  - If any old key was ever committed or exposed, it should still be rotated upstream.
+- Flat reentry state (`last_exit_price`, reentry cooldown, short loss cluster) used to be losable across lane restarts.
+  - this is now journal-recovered in `trading/processes/core.py`
+  - future checks should still verify `core_reentry_state_recovered` in the lane journal after restart
+- Some dashboard values may still lag or confuse if interpreted as exchange truth.
+- Future live trades still need monitoring to verify trader-side exit fixes under real market conditions.
+
+If a new chat starts here
+- Read this file first.
+- Then inspect current:
+  - `configs/rotation_active_lanes.json`
+  - `configs/rotation_strategy_settings_catalog.yaml`
+  - `docs/rotation_strategy_settings_catalog.md`
+  - `logs/rotation_ml_shadow_report.json`
+  - `logs/rotation_openai_shadow_report.json`
+  - the relevant symbol journal
+- Assume current priority remains:
+  - prevent repeated quick-loss exits / re-entries
+  - keep learning focused on exit quality
+  - do not let the OpenAI layer become a direct trading controller
+
+LATEST UPDATE AFTER RECENT WORK
+
+1. Current carry-forward truths
+- The rotation system is running in the current `135 -> up to 28 -> up to 4` model.
+- Selector fallback is no longer the default bottleneck.
+- If rotation appears stuck, check first whether `logs/rotation_selector_guard.disabled` exists.
+- The relay page on `8940` is backed by `binance-relay.service`.
+- "Live Coins" must be read as:
+  - `selected=true` = one of the real active `4`
+  - `running=true` = a running watch/live lane, which can be more than `4`
+- The dashboard prefers runtime strategy truth over stale selector snapshot names.
+
+2. Trader-side truths
+- The sell/reconcile path is materially cleaner than before:
+  - duplicate flatten / emergency exits are suppressed while an older exit is inflight
+  - synthetic `account_sync_delta` sell artifacts are suppressed while open orders still exist
+  - dust-only sync deltas below min-notional are ignored
+  - relay local trade reports now ignore `account_sync_delta` pseudo-fills
+- `time_break_even_floor` no longer acts as a deep-loss time stop before any near-break-even excursion.
+- `time_break_even_floor` also no longer cuts a fresh continuation bottom-reclaim like the `RENDER` sell from `2026-03-16`.
+- Flat reentry state is restored from journals after restart, so same-symbol loss-cluster / cooldown state should survive lane restarts.
+- Dashboard trade reports now default to `auto`, which prefers the local Binance trade mirror and falls back to journals only if no mirror data exists.
+- The first real `24h` audit showed that the problem is not just UI:
+  - journal-vs-Binance mismatches are real on several symbols
+  - examples included `SHIB`, `CFX`, `RENDER`, `FET`, `VIRTUAL`
+  - some symbols existed only on the journal side, others only on the Binance side
+- Important consequence:
+  - dashboard PnL should prefer the Binance mirror
+  - learning / labs still need journal decision context, but trade samples are now mirror-annotated before lab use
+  - `rotation_strategy_lab` and `rotation_replay_lab` now keep only `mirror_verified` trade samples for scoring
+  - partial mirror matches (`time_qty_only`) stay visible in the reports, but they are not used as learning evidence
+  - before a new lab rerun, run `audit_trade_mirror_coverage.py`; if mismatch count is high, treat the sample as contaminated
+- Plain-language rule for future chats:
+  - Binance is the source of truth for what really bought and sold.
+  - Local journals are the source of truth for why the bot decided to act.
+  - The dashboard should therefore trust the Binance mirror first for realized trade results.
+  - The labs should not learn from journal-only trades anymore.
+  - The practical learning source is now: local bot decisions plus Binance-confirmed fills.
+  - If many recent trades cannot be confirmed against Binance, treat the sample as dirty and do not trust a fresh lab rerun.
+
+3. Meta / learning truths
+- OpenAI remains meta-controller only, not a direct trader.
+- Local secret envs are the live source of truth:
+  - `~/.config/codex/rotation-openai.env`
+  - `~/.config/codex/trading-secrets.env`
+- Learning uses shadow/journal reconstruction, not dashboard PnL.
+- The practical lab source is now:
+  - journal decisions + Binance-mirror-verified fills
+  - not raw journal fills alone
+- The learning path is cleaner than before, but still not strong enough to trust blindly.
+- The real next learning step is to separate entry quality from exit management quality.
+
+4. Current practical priorities
+- Keep collecting fresh clean live exits before another broad strategy retune.
+- `breakout ver.3` remains the main future lab candidate, but only when the sample is not contaminated by recovery/account-sync artifacts.
+- `continuation` should currently be judged on exit persistence, not on another broad entry opening pass.
+- `staircase` and `rebound` now have practical trader-side openings for first real trades; judge them on fresh live evidence rather than on old no-trade assumptions.
+- If a new live review is started, the default cut should be:
+  - all fills from `0 UTC` to now
+  - grouped into execution bug, too-early stop, too-early floor, daily-loss clamp, mixed-age exit, and normal/unclear
+
+Strategy settings catalog
+- The 4-strategy handoff catalog now exists in:
+  - `configs/rotation_strategy_settings_catalog.yaml`
+  - `docs/rotation_strategy_settings_catalog.md`
+- The reusable per-strategy lab reports now live in:
+  - `logs/rotation_strategy_labs/`
+  - generated by `scripts/rotation_strategy_lab.py`
+- Only these 4 core strategies are still part of the live handoff and live dashboard:
+  - `staircase`
+  - `continuation`
+  - `breakout`
+  - `rebound`
+- Older meta strategy names should no longer be treated as live strategy targets:
+  - `pullback_continuation`
+  - `breakout_retest`
+  - `relative_strength`
+- This catalog is the new source of truth for:
+  - which strategy setting belongs to which core strategy
+  - where the live override must be written
+  - where the generated runtime value must appear
+  - which next knob is worth testing per strategy
+- Strategy revision artifacts currently known to future chats:
+  - `logs/rotation_strategy_labs/rebound_ver.2.json`
+  - `logs/rotation_strategy_labs/staircase_ver.1.json`
+  - `logs/rotation_strategy_labs/staircase_ver.2.json`
+  - `logs/rotation_strategy_labs/continuation_ver.1.json`
+  - `logs/rotation_strategy_labs/continuation_ver.2.json`
+  - `logs/rotation_strategy_labs/breakout_ver.2.json`
+- Current live per-strategy settings:
+  - `rebound` = `ver.2`
+    - primary live value: `ROTATION_SWING_REVERSAL_THRESHOLD_BPS=0.58`
+    - live bundle candidate: `rebound_tradeability_soft` in `rebound_ver.2`
+    - live swing bundle overrides:
+      - `ROTATION_SWING_MIN_RANGE_BPS=48.0`
+      - `ROTATION_SWING_MICRO_REBOUND_MAX_SPREAD_BPS=15.0`
+    - important runtime fix:
+      - the selector now writes a real `alpha.swing` block, so rebound overrides apply live instead of falling back to Swing defaults
+  - `staircase` = `ver.2`
+    - `ROTATION_CONT_STAIRCASE_MIN_DRAWDOWN_FROM_PEAK_BPS=0.0`
+    - live bundle candidate: `staircase_tradeability_soft` in `staircase_ver.2`
+    - live bundle overrides:
+      - `ROTATION_CONT_STAIRCASE_MIN_TREND_BPS=28.0`
+      - `ROTATION_CONT_STAIRCASE_MIN_RET_BPS=-10.0`
+      - `ROTATION_CONT_STAIRCASE_MIN_VOLUME_Z=-1.0`
+      - `ROTATION_CONT_STAIRCASE_MIN_SLOPE_MEDIUM_BPS=0.95`
+      - `ROTATION_CONT_STAIRCASE_MIN_SLOPE_LONG_BPS=0.18`
+      - `ROTATION_CONT_STAIRCASE_MAX_DRAWDOWN_FROM_PEAK_BPS=90.0`
+      - `ROTATION_CONT_STAIRCASE_MAX_CONTEXT_RANGE_POS=0.99`
+      - `ROTATION_CONT_STAIRCASE_MAX_SPREAD_BPS=22.0`
+  - `continuation` = `ver.2`
+    - primary live value: `ROTATION_CONT_STAIRCASE_MIN_SLOPE_MEDIUM_BPS=0.95`
+    - live bundle candidate: `continuation_tradeability_open` in `continuation_ver.2`
+    - live general continuation overrides:
+      - `ROTATION_CONT_TREND_MIN_BPS=1.5`
+      - `ROTATION_CONT_REBOUND_TRIGGER_BPS=4.0`
+      - `ROTATION_CONT_MIN_VOLUME_Z=-1.2`
+      - `ROTATION_CONT_RANGE_CONTINUATION_MAX_RANGE_POS=1.0`
+    - live early-liftoff bundle overrides:
+      - `ROTATION_CONT_EARLY_LIFTOFF_MAX_CONTEXT_RANGE_POS=0.58`
+      - `ROTATION_CONT_EARLY_LIFTOFF_MAX_STRUCTURE_RANGE_POS=0.82`
+      - `ROTATION_CONT_EARLY_LIFTOFF_MIN_CONTEXT_REBOUND_BPS=28.0`
+      - `ROTATION_CONT_EARLY_LIFTOFF_MAX_SPREAD_BPS=18.0`
+      - `ROTATION_CONT_EARLY_LIFTOFF_MIN_SLOPE_SHORT_BPS=0.9`
+      - `ROTATION_CONT_EARLY_LIFTOFF_MIN_SLOPE_MEDIUM_BPS=0.95`
+      - `ROTATION_CONT_EARLY_LIFTOFF_MIN_DRAWDOWN_FROM_PEAK_BPS=18.0`
+      - `ROTATION_CONT_EARLY_LIFTOFF_MIN_TREND_BPS=-320.0`
+    - latest corrected rerun artifact: `logs/rotation_strategy_labs/continuation.json`
+    - live `ver.2` intentionally uses `continuation_tradeability_open`
+      - reason: more tradeability with smaller estimated PnL hit than `continuation_tradeability_force`, and without widening shared staircase/cost gates
+  - `breakout` = `ver.2`
+    - primary live value: `ROTATION_BREAKOUT_TRIGGER_BPS=7.0`
+    - live bundle candidate: `breakout_tradeability_soft` in `breakout_ver.2`
+    - shared late-entry bundle overrides:
+      - `ROTATION_LATE_ENTRY_BLOCK_CONTEXT_RANGE_POS=0.75`
+      - `ROTATION_LATE_ENTRY_BLOCK_STRUCTURE_RANGE_POS=0.84`
+      - `ROTATION_LATE_ENTRY_BLOCK_MAX_CONTEXT_DRAWDOWN_BPS=56.0`
+      - `ROTATION_LATE_ENTRY_BLOCK_MIN_TREND_RETURN_BPS=45.0`
+      - `ROTATION_LATE_ENTRY_BLOCK_MIN_RETURN_BPS=4.0`
+- Important handoff rule:
+  - future chats should treat the catalog + `logs/rotation_strategy_labs/index.json` as the lookup table
+  - each strategy can be iterated independently in the lab
+  - when a new revision is accepted, name it sequentially (`ver.3`, `ver.4`, ...)
+  - only then mirror the chosen value into:
+    - `configs/rotation_selector_watch_pool.env`
+    - `configs/rotation_meta_runtime.env`
+- Technical note:
+  - staircase lab now evaluates the real continuation-backed staircase bundle instead of only sweeping `min_drawdown_from_peak_bps`
+  - staircase `ver.2` came from the accepted candidate `staircase_tradeability_soft`
+  - staircase `ver.2` is now live-applied through `rotation_selector_watch_pool.env`
+  - breakout now has an explicit runtime target path `alpha.breakout.trigger_bps`
+  - continuation now has an explicit env path for `ROTATION_CONT_STAIRCASE_MIN_SLOPE_MEDIUM_BPS`
+  - continuation early-liftoff gates are now also explicitly configurable in the runtime
+  - continuation lab now respects the real active baseline and ignores disabled meta-runtime overrides
+  - continuation `ver.2` is now the targeted `continuation_tradeability_open` bundle
+  - continuation `ver.2` was applied only through general continuation + early-liftoff gates, leaving shared staircase/cost gates unchanged
+  - trader-side `time_break_even_floor` now also skips fresh continuation bottom-reclaim states with intact local structure; this was added after the `RENDER` sell on `2026-03-16 17:19 CET` exited `1.851` after a `1.854` buy and price later traded up to `1.8735`
+  - mid-trade restart recovery no longer carries over the old day-loss anchor inside risk state; this fixes the later `VIRTUAL` pattern where a fresh startup tick at flat cash was followed by account recovery and then a false instant `daily_loss_limit`
+  - a historical audit across the current live journals showed that this restart/recovery class is not coin-specific: `1112` startup recoveries with open position on `61` symbols, `31` followed by `daily_loss_limit` within `5 min`, `247` followed by a first sell within `3 min`; the heaviest repeat cases in the sample were `VIRTUAL`, `ETHFI`, `ROBO`, `ZAMA`, `RENDER`, `SENT`, and `NEAR`
+  - launch/watchdog now writes a normal journal event for the real restart cause (`launch_watchdog`) and also prints the same cause into the guard log; future mid-trade restarts should therefore expose whether the first trigger was `heartbeat_stale`, `critical_child_exit`, or a direct signal
+  - the first concrete restart root cause is now confirmed: recent `VIRTUAL` lane restarts were being triggered by in-process `RELOAD`, not by the normal trading loop; reload was still doing a full heavy warmup and starving the core heartbeat long enough for the watchdog to kill the lane with `heartbeat_stale`
+  - core reload now emits a heartbeat before reload work, skips heavy warmup by default during in-process reloads, and batches repeated `RELOAD` commands into one effective reload; this was rolled out live and rechecked by forcing a fresh `VIRTUAL` reload, which now applies cleanly without a new watchdog shutdown
+  - staircase no-trade behavior was also partly a selector problem: the selector had been forcing staircase slots onto very late names like `ATOM`, `VIRTUAL`, and earlier `SKY`, often with `no_valley_context` and `24h` range position around `95-100 %`; it now skips these fake staircase slot-fills unless there is a real strong staircase exception
+  - selector-side no-trade audit on `2026-03-17` found two additional blockers:
+    - generic slot filling could still promote ineligible continuation-style rows into active slots if they had positive strategy meta scores, even when `eligible=false` and the row was blocked by reasons like `no_valley_context`; this is now blocked, while the intentional fast-breakout, rebound, and strong-staircase exceptions remain allowed
+    - running `rotation_auto_coin_selector.py` without the selector guard environment could silently fall back to the legacy strategy set (`pullback_continuation`, `breakout_retest`, `relative_strength`); the default fallback is now the live core four only: `staircase`, `continuation`, `breakout`, `rebound`
+  - practical consequence of that selector fix: if the current active set is empty or shrinks to `1`, that now more likely reflects real market/strategy gating instead of the selector stuffing bad fallback names into the remaining slots
+  - rebound lab now evaluates a configurable swing-style range floor and can emit live-supported `swing_min_range_bps` / `micro_rebound_max_spread_bps` overrides
+  - rebound `ver.2` is now the profit-oriented `rebound_tradeability_soft` bundle
+  - breakout `ver.2` is now the profit-oriented `breakout_tradeability_soft` bundle
+
+2026-03-15 live trade review backlog
+- A new persistent live-review handoff now exists in:
+  - `docs/rotation_live_trade_issue_backlog.md`
+- It reviews live fills from `2026-03-15 04:00 CET` to `2026-03-15 18:17 CET`.
+- Grouped findings in that window:
+  - `execution_reconcile_error = 4`
+  - `too_early_stop_exit = 3`
+  - `fast_loser = 2`
+  - `reconcile_only_exit = 3`
+  - `normal_or_unclear = 16`
+- Most important practical conclusion:
+  - `breakout` is the clearest `ver.3` candidate from fresh live evidence
+  - `continuation` should only be reopened for exit-persistence review, not for another broad entry-opening pass
+  - `staircase` had no fresh staircase-tagged exit in that window, so it should stay on `ver.2`
+  - `rebound` had no fresh rebound / swing exit in that window, so it should stay on `ver.2`
+- Important lab rule for future chats:
+  - recovery/account-sync contaminated exits must be treated as execution evidence first, not blindly as strategy evidence
+- Important concrete cases captured there:
+  - `INIT` and `TST` showed very-early `breakout` hard-stop exits
+  - `PLUME`, `CRV`, and `ZAMA` showed exit behavior mixed with recovery/account-sync artifacts
+  - `FET` and `FLUX` showed profitable exits with reconcile mirrors, so they are weaker evidence for retuning than a fully clean trade sample
+  - exploratory breakout exit-relief rerun artifact:
+    `logs/rotation_strategy_labs/breakout_rerun_2026-03-15_exit_relief.json`
+  - result of that rerun:
+    no accepted `breakout ver.3`; best-ranked fallback was `breakout_6.0` with
+    `net_pnl_delta = -0.034886`, and the dedicated `breakout_exit_relief_*`
+    bundles showed `0` improved exits on the sampled breakout trades
+
+2026-03-21 relay/dashboard important state
+- Scope of the latest changes:
+  - mostly relay/dashboard behavior and UI layout
+  - no intentional change to core trading decision rules in this UI pass
+- Relay operation reminder:
+  - use `systemctl --user` for relay control (not system-wide `systemctl`)
+  - service name: `binance-relay.service`
+- Live hold-time correctness fix:
+  - live `entryOpenedAt` is no longer allowed to silently fall back to `selectedSince`
+  - new recovery path in relay:
+    - first try `exec_entry_reference_recovered.entry_ts`
+    - fallback: infer entry open time from reverse fill reconstruction
+  - practical effect:
+    - prevents inflated hold-time values after incomplete campaign reconstruction
+- New live payload fields for active-trade charting:
+  - `entryTrendSeries10h`
+  - `entryTrendWindow10hMin`
+  - `entryTrendSeriesPoints10h`
+  - defaults are now present even for non-trading/down rows
+- "Aktive Trades" UI redesign (current intended behavior):
+  - reduced columns to: `Symbol`, `Coin-Range-%`, `10m`, chart, `Haltezeit`
+  - removed old `1h/5h/Stand` fields from that table
+  - chart shows a 10-hour window relative to entry and starts at actual entry time
+    - if hold time is shorter (e.g. 5h), left side stays empty and curve starts later
+  - no y-axis labels and no extra text under the chart
+  - mobile view is a separate compact 2-line card layout per coin:
+    - line 1: text summary (symbol/range/10m/hold)
+    - line 2: chart
+- "Live Coins" UI column tuning:
+  - columns are now explicitly width-tuned in CSS
+  - latest requested distribution emphasizes:
+    - narrower `Exit / Aktuell`
+    - wider `Gewinn / Verlust`, `Bis Exit`, `Roll / Ziel`
+  - this is presentation-only and can be retuned quickly in `index.html`

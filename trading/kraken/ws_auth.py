@@ -35,6 +35,7 @@ class OwnTradeUpdate:
     vol: float
     fee: float
     pair: Optional[str] = None
+    event_id: Optional[str] = None
 
 
 class OpenOrdersWS:
@@ -108,6 +109,25 @@ def _parse_open_orders(msg: Any) -> Iterable[OpenOrderUpdate]:
             )
         return
 
+    # Common authenticated WS format: [channelID, {orderid: {...}}, "openOrders", <sequence?>]
+    if isinstance(msg, list) and len(msg) >= 3 and msg[2] == "openOrders":
+        payloads = msg[1]
+        if isinstance(payloads, dict):
+            for order_id, payload in payloads.items():
+                if order_id == "sequence" or not isinstance(payload, dict):
+                    continue
+                status = payload.get("status", "")
+                vol = _to_float(payload.get("vol"))
+                vol_exec = _to_float(payload.get("vol_exec"))
+                yield OpenOrderUpdate(
+                    ts=datetime.now(timezone.utc),
+                    order_id=str(order_id),
+                    status=str(status),
+                    vol=vol,
+                    vol_exec=vol_exec,
+                )
+        return
+
     if isinstance(msg, list) and msg and msg[-1] == "openOrders":
         payloads = msg[0] if msg else []
         if isinstance(payloads, list):
@@ -129,21 +149,47 @@ def _parse_open_orders(msg: Any) -> Iterable[OpenOrderUpdate]:
 def _parse_own_trades(msg: Any) -> Iterable[OwnTradeUpdate]:
     if isinstance(msg, dict) and "ownTrades" in msg:
         updates = msg.get("ownTrades", {})
+        event_id = _to_event_id(msg.get("sequence") or msg.get("event_id"))
         for trade_id, payload in updates.items():
-            yield _build_own_trade(str(trade_id), payload)
+            yield _build_own_trade(str(trade_id), payload, event_id=event_id)
+        return
+
+    # Common authenticated WS format: [channelID, {tradeid: {...}}, "ownTrades", <sequence?>]
+    if isinstance(msg, list) and len(msg) >= 3 and msg[2] == "ownTrades":
+        payloads = msg[1]
+        msg_event_id = _to_event_id(msg[3]) if len(msg) >= 4 else None
+        if isinstance(payloads, dict):
+            payload_event_id = _to_event_id(payloads.get("sequence") or payloads.get("event_id"))
+            event_id = payload_event_id or msg_event_id
+            for trade_id, payload in payloads.items():
+                if trade_id == "sequence" or trade_id == "event_id" or not isinstance(payload, dict):
+                    continue
+                yield _build_own_trade(str(trade_id), payload, event_id=event_id)
         return
 
     if isinstance(msg, list) and msg and msg[-1] == "ownTrades":
         payloads = msg[0] if msg else []
         if isinstance(payloads, list):
+            msg_event_id: Optional[str] = None
             for entry in payloads:
                 if isinstance(entry, dict):
+                    # Kraken list payload can include {"sequence": <n>} entries.
+                    if "sequence" in entry and len(entry) == 1:
+                        msg_event_id = _to_event_id(entry.get("sequence"))
+                        continue
                     for trade_id, payload in entry.items():
-                        yield _build_own_trade(str(trade_id), payload)
+                        yield _build_own_trade(str(trade_id), payload, event_id=msg_event_id)
 
 
-def _build_own_trade(trade_id: str, payload: Dict[str, Any]) -> OwnTradeUpdate:
+def _to_event_id(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _build_own_trade(trade_id: str, payload: Dict[str, Any], event_id: Optional[str] = None) -> OwnTradeUpdate:
     ts = datetime.fromtimestamp(float(payload.get("time", time.time())), tz=timezone.utc)
+    payload_event_id = _to_event_id(payload.get("sequence") or payload.get("event_id"))
     return OwnTradeUpdate(
         ts=ts,
         trade_id=trade_id,
@@ -153,4 +199,5 @@ def _build_own_trade(trade_id: str, payload: Dict[str, Any]) -> OwnTradeUpdate:
         vol=float(payload.get("vol", 0.0)),
         fee=float(payload.get("fee", 0.0)),
         pair=payload.get("pair"),
+        event_id=payload_event_id or event_id,
     )

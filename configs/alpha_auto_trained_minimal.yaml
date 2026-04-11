@@ -1,0 +1,28 @@
+alpha:
+  type: auto
+  auto:
+    trend:
+      lookback: 8
+      threshold_bps: 1.0
+      scale: 4.0
+    mean_reversion:
+      lookback: 4
+      threshold_bps: 1.5
+      scale: 1.0
+      max_edge_bps: 0.0
+    breakout:
+      lookback: 16
+      trigger_bps: 4.0
+      scale: 8.0
+      max_edge_bps: 0.0
+    regime:
+      lookback: 12
+      trend_momentum_bps: 6.0
+      range_momentum_bps: 4.0
+      high_vol_atr_bps: 160.0
+      low_vol_atr_bps: 40.0
+      breakout_return_bps: 5.0
+      default_regime: trend
+      trend_strategy: trend
+      range_strategy: mean_reversion
+      breakout_strategy: breakout

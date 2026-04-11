@@ -1,0 +1,26 @@
+[Unit]
+Description=Codex Trader Live Stack
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Schreibtisch/codex/bitcoin2
+# Optional overrides can be placed in ~/.config/codex-trader-live.env
+EnvironmentFile=-%h/.config/codex-trader-live.env
+Environment=MODE=live
+Environment=CONFIG=configs/live_binance_eth_usdc.yaml
+Environment=MAX_RESTARTS=0
+Environment=BASE_SLEEP_SEC=2
+Environment=MAX_SLEEP_SEC=60
+Environment=MIN_UPTIME_SEC=90
+ExecStart=/bin/bash -lc './scripts/live_guard.sh'
+ExecStop=/bin/bash -lc './scripts/live_guard_stop.sh'
+Restart=on-failure
+RestartSec=2
+SuccessExitStatus=130 143 SIGINT SIGTERM
+TimeoutStopSec=30
+KillSignal=SIGINT
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,194 @@
+general:
+  starting_cash_eur: 150.0
+
+data:
+  default_micro:
+    spread_bps: 8.0
+    depth: 100000.0
+    imbalance: 0.0
+
+features:
+  return_window: 1
+  atr_window: 14
+  volume_z_window: 20
+  trend_window: 240
+  context_window: 2880
+
+cost:
+  # Binance account-verified spot fees for ETHUSDC: maker=0.10%, taker=0.095%
+  maker_fee_bps: 10.0
+  taker_fee_bps: 9.5
+  slippage_base_bps: 0.5
+  slippage_vol_mult: 0.01
+  spread_component_factor: 0.5
+
+gate:
+  safety_margin_bps: 2.0
+  max_spread_bps: 18.0
+  min_atr_bps: 3.5
+  max_atr_bps: 250.0
+  session_start_utc: 0
+  session_end_utc: 24
+  stale_seconds: 1800
+  block_on_high_news_impact: false
+  max_news_impact: 0.8
+  max_news_age_sec: 1800
+  news_safety_margin_bps: 0.0
+
+alpha:
+  type: auto
+  # Keep live behavior explicit in this file (no hidden risk/gate overrides from sim configs).
+  override_path: ""
+  auto:
+    regime:
+      context_pullback_bps: 70.0
+      context_rebound_bps: 70.0
+      context_trend_bps: 110.0
+      context_range_low: 0.35
+      context_range_high: 0.68
+
+risk:
+  max_exposure_eur: 20.0
+  # fixed|equity|cash
+  # equity => 100% sizing reference is current account equity.
+  max_exposure_mode: equity
+  vol_target_bps: 120.0
+  daily_loss_limit_eur: 1.0
+  max_drawdown_pct: 10.0
+  cooldown_bars: 0
+  allow_short: false
+  use_vol_scaling: false
+  # Avoid rapid size-flips from short-lived gate size-factor swings.
+  use_gate_size_factor: false
+  entry_edge_bps: 8.0
+  entry_cost_buffer_bps: 14.0
+  exit_edge_bps: -0.2
+  exit_bypass_gate_edge_bps: -20.0
+  min_hold_bars: 0
+  # Require a larger price move since last flat exit before re-entering.
+  reentry_min_move_bps: 140.0
+  # Block fresh long entries when context and trend are both clearly negative.
+  block_long_if_context_return_bps_below: -250.0
+  block_long_if_trend_return_bps_below: -80.0
+  rebalance_min_delta_eur: 8.0
+  # Treat leftover positions below ~2 USDC as flat, even if exchange quantity is still non-zero.
+  position_epsilon_eur: 2.0
+  # Professional anti-chop mode for small live capital: hold full position until explicit exit.
+  full_position_only: true
+  require_break_even_for_exit: true
+  min_exit_profit_bps: 20.0
+  hard_take_profit_bps: 40.0
+  # Immediate hard stop under avg entry (independent of break-even gating).
+  hard_stop_loss_bps: 100.0
+  hard_take_profit_only_in_range: true
+  trailing_stop_enabled: true
+  trailing_activation_bps: 35.0
+  trailing_stop_bps: 70.0
+  trailing_stop_atr_mult: 2.0
+
+order:
+  type: market
+  post_only: false
+  limit_offset_bps: 2.0
+  # Base-asset minimum qty (ETH in ETH/USDC).
+  min_trade_btc: 0.0005
+  slice_count: 1
+  # fixed|exposure|equity|cash
+  # exposure => cycle notional follows current max exposure each tick.
+  cycle_trade_mode: exposure
+  cycle_trade_eur: 20.0
+
+execution:
+  latency_bars: 0
+  partial_fill_ratio: 1.0
+  slippage_bps: 1.0
+
+md:
+  exchange: binance
+  pair: ETH/USDC
+  ws_url: wss://stream.binance.com:9443
+  stale_seconds: 60
+  stale_book_seconds: 90
+  stale_trade_seconds: 90
+  reconnect_min: 1
+  reconnect_max: 30
+  interval_seconds: 30
+
+core:
+  trading_enabled: true
+  stale_seconds: 40
+  max_orders_per_min: 20
+  rate_limit_pause_sec: 2.0
+  warmup:
+    enabled: true
+    window_hours: 24
+    min_bars: 600
+    max_bars: 5000
+    use_journal_db: true
+    use_journal_json: true
+    rest_backfill: true
+    timeout_sec: 8.0
+
+exec:
+  exchange: binance
+  pair: ETH/USDC
+  rate_limit_per_sec: 5.0
+  reconcile_interval_sec: 5.0
+  canary_mode: false
+  private_ws_enabled: true
+  enable_deadman_on_binance: false
+  deadman_timeout_sec: 60
+  deadman_tick_sec: 20
+  deadman_in_paper: false
+  rate_limit_pause_sec: 2.0
+  owntrades_dedupe_size: 50000
+  balance_refresh_on_owntrades: false
+  balance_refresh_debounce_sec: 30
+  balance_refresh_sec: 120
+  balance_nonzero_only: true
+  # On restart, ignore tiny leftover inventory below ~2 USDC.
+  sync_min_position_eur: 2.0
+
+journal:
+  db_path: logs/journal_live_binance_eth_usdc.db
+  json_path: logs/journal_live_binance_eth_usdc.jsonl
+
+ipc:
+  market_queue_size: 1
+  impact_queue_size: 1
+  order_queue_size: 100
+  exec_report_queue_size: 200
+  journal_queue_size: 10000
+  telemetry_queue_size: 1000
+  heartbeat_queue_size: 1000
+  heartbeat_timeout: 5.0
+
+impact:
+  enabled: true
+  source: api
+  symbol: ETH/USDC
+  interval_seconds: 15
+  timeout_seconds: 3
+  api_url: "http://127.0.0.1:8011/signal/multi-asset-probability?target=ETH&lookback=72h&horizons=1h"
+  file_path: modules/impact_console/diagnostics/arrow_1h.json
+  fallback_to_file: true
+
+news:
+  edge_scale_bps: 30.0
+  block_long_entries: true
+  risk_off_threshold: 0.2
+  min_impact: 0.45
+
+control:
+  enabled: true
+  host: 127.0.0.1
+  port: 8000
+  stale_warn_sec: 12
+
+live:
+  exchange: binance
+  symbol: ETH/USDC
+  api_key: ${BINANCE_API_KEY}
+  api_secret: ${BINANCE_API_SECRET}
+  rate_limit_per_sec: 5.0
+  rest_url: https://api.binance.com

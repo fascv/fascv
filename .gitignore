@@ -10,8 +10,22 @@ venv/
 # Runtime outputs
 logs/
 reports/
+data/*.db
+data/*.sqlite
+data/*.zip
+data/binance_vision/
+
+# Local assistant/runtime scratch
+.codex
+''/
 
 # OS/editor
 .DS_Store
 .vscode/
 .idea/
+
+# Impact Console runtime artifacts
+modules/impact_console/*.db
+modules/impact_console/.pytest_cache/
+modules/impact_console/diagnostics/
+modules/impact_console/tools/bin/

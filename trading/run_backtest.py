@@ -8,6 +8,7 @@ from typing import Any, Dict
 from trading.app import build_pipeline
 from trading.config import load_config
 from trading.data.backtest import BacktestCSVDataSource
+from trading.data.sqlite_ohlcv import SQLiteOHLCVDataSource
 from trading.execution.backtest import BacktestExecutionConfig, BacktestSimulator
 
 
@@ -23,9 +24,20 @@ def _cfg(d: Dict[str, Any], path: str, default: Any) -> Any:
 def run_backtest(config_path: str) -> Dict[str, Any]:
     cfg = load_config(config_path).raw
 
-    data_path = _cfg(cfg, "data.path", "")
     default_micro = _cfg(cfg, "data.default_micro", {})
-    data_source = BacktestCSVDataSource(path=data_path, default_micro=default_micro)
+    data_source_name = str(_cfg(cfg, "data.source", "csv") or "csv").strip().lower()
+    if data_source_name in {"sqlite", "db"}:
+        data_source = SQLiteOHLCVDataSource(
+            db_path=str(_cfg(cfg, "data.db_path", "data/market.db")),
+            symbol=str(_cfg(cfg, "data.symbol", _cfg(cfg, "md.pair", "XBT/EUR"))),
+            timeframe=str(_cfg(cfg, "data.timeframe", "5m")),
+            default_micro=default_micro,
+            start=str(_cfg(cfg, "data.start", "") or "") or None,
+            end=str(_cfg(cfg, "data.end", "") or "") or None,
+        )
+    else:
+        data_path = _cfg(cfg, "data.path", "")
+        data_source = BacktestCSVDataSource(path=data_path, default_micro=default_micro)
     execution = BacktestSimulator(
         BacktestExecutionConfig(
             latency_bars=int(_cfg(cfg, "execution.latency_bars", 0)),

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Codex Rotation Meta Shadow Controller every 5 minutes
+
+[Timer]
+OnBootSec=4min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Unit=codex-rotation-meta-shadow.service
+
+[Install]
+WantedBy=timers.target

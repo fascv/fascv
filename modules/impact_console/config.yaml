@@ -1,0 +1,708 @@
+feeds:
+- name: fed
+  type: rss
+  url: https://www.federalreserve.gov/feeds/press_all.xml
+- name: ecb
+  type: rss
+  url: https://www.ecb.europa.eu/rss/press.html
+- name: sec
+  type: rss
+  url: https://www.sec.gov/news/pressreleases.rss
+- name: cftc
+  type: rss
+  url: https://www.cftc.gov/RSS/RSSGP/rssgp.xml
+- name: bls
+  type: rss
+  url: https://www.bls.gov/feed/cpi.rss
+- name: bls_latest
+  type: rss
+  url: https://www.bls.gov/feed/bls_latest.rss
+- name: bls_empsit
+  type: rss
+  url: https://www.bls.gov/feed/empsit.rss
+- name: bls_ppi
+  type: rss
+  url: https://www.bls.gov/feed/ppi.rss
+- name: bls_jolts
+  type: rss
+  url: https://www.bls.gov/feed/jolts.rss
+- name: dol_releases
+  type: rss
+  url: https://www.dol.gov/rss/releases.xml
+- name: fed_speeches
+  type: rss
+  url: https://www.federalreserve.gov/feeds/speeches.xml
+- name: sec_litigation
+  type: rss
+  url: https://www.sec.gov/enforcement-litigation/litigation-releases/rss
+- name: coindesk
+  type: rss
+  url: https://www.coindesk.com/arc/outboundfeeds/rss/
+- name: cointelegraph
+  type: rss
+  url: https://cointelegraph.com/rss
+- name: decrypt
+  type: rss
+  url: https://decrypt.co/feed
+- name: theblock
+  type: rss
+  url: https://www.theblock.co/rss.xml
+- name: bitcoinmagazine
+  type: rss
+  url: https://bitcoinmagazine.com/.rss/full/
+- name: newsbtc
+  type: rss
+  url: https://www.newsbtc.com/feed/
+- name: kraken_status
+  type: rss
+  url: https://status.kraken.com/history.rss
+- name: coinbase_status
+  type: rss
+  url: https://status.coinbase.com/history.rss
+gdelt:
+  enabled: true
+  endpoint: https://api.gdeltproject.org/api/v2/doc/doc
+  query: (bitcoin OR btc OR cryptocurrency)
+  timespan: 1h
+  maxrecords: 50
+  max_retries: 1
+  retry_seconds: 6
+  max_per_domain_per_run: 2
+  require_relevance: true
+  min_relevance_matches: 1
+  relevance_terms:
+  - bitcoin
+  - btc
+  - crypto
+  - cryptocurrency
+  - digital asset
+  - digital assets
+  - stablecoin
+  - etf
+  - blockchain
+  - token
+  - binance
+  - coinbase
+  - kraken
+  domain_allowlist:
+  - finance.yahoo.com
+  - yahoo.com
+  - reuters.com
+  - bloomberg.com
+  - cnbc.com
+  - marketwatch.com
+  - wsj.com
+  - ft.com
+  - coindesk.com
+  - cointelegraph.com
+  - decrypt.co
+  - theblock.co
+  - bitcoinmagazine.com
+  - newsbtc.com
+  - fool.com
+  - investing.com
+  - barrons.com
+  - markets.com
+  domain_blocklist:
+  - africaleader.com
+  - batonrougepost.com
+  - dailypolitical.com
+  - hongkongherald.com
+  - londonmercury.com
+  - malaysiasun.com
+  - northkoreatimes.com
+  - openpr.com
+  - pakistantelegraph.com
+  - saltlakecitysun.com
+  - taiwansun.com
+  - themarketsdaily.com
+  - tickerreport.com
+  drop_duplicate_titles: true
+dedupe:
+  fuzzy_threshold: 0.92
+  lookback_hours: 24
+aggregation:
+  source_repeat_half_life_items: 3.0
+  cluster_repeat_half_life_items: 2.0
+  event_cluster_terms_limit: 8
+  event_cluster_time_bucket_minutes: 60
+ingestion:
+  max_future_skew_seconds: 120
+http:
+  user_agent: 'btc-news-arrow/1.0 (contact: you@example.com)'
+source_weights:
+  fed: 1.0
+  ecb: 0.95
+  sec: 1.0
+  cftc: 0.9
+  bls: 0.9
+  bls_latest: 0.8
+  bls_empsit: 0.95
+  bls_ppi: 0.9
+  bls_jolts: 0.85
+  dol_releases: 0.75
+  fed_speeches: 0.85
+  sec_litigation: 0.95
+  coindesk: 0.7
+  cointelegraph: 0.6
+  decrypt: 0.65
+  theblock: 0.7
+  bitcoinmagazine: 0.6
+  newsbtc: 0.55
+  kraken_status: 0.85
+  coinbase_status: 0.85
+  gdelt: 0.6
+source_quality_weighting:
+  enabled: true
+  report_path: diagnostics/source_quality_latest.json
+  window: 1h
+  min_samples: 8
+  shrinkage_samples: 40
+  corr_weight: 0.35
+  directional_weight: 0.25
+  baseline_directional_accuracy: 0.5
+  min_multiplier: 0.75
+  max_multiplier: 1.25
+  unknown_source_multiplier: 1.0
+  stale_after_minutes: 720
+category_weights:
+  macro: 1.0
+  regulation: 1.0
+  etf_institutional: 0.95
+  exchange_incident: 0.95
+  geopolitics_risk: 0.8
+  stablecoins_liquidity: 0.85
+  other: 0.5
+trigger_multipliers:
+  unexpected: 1.2
+  emergency: 1.3
+  lawsuit: 1.2
+  approved: 1.15
+  approval: 1.15
+  outage: 1.2
+  halt: 1.25
+  hacked: 1.3
+heuristics:
+  context_direction_weight: 0.7
+  direction_deadzone: 0.15
+  macro_surprise_multiplier: 1.3
+  macro_in_line_multiplier: 0.75
+  regulation_final_multiplier: 1.2
+  regulation_preliminary_multiplier: 0.7
+  regulation_non_crypto_multiplier: 0.0
+  macro_commentary_multiplier: 0.35
+  exchange_altcoin_only_multiplier: 0.25
+  exchange_minor_ops_multiplier: 0.45
+  exchange_core_ops_multiplier: 1.0
+  other_non_crypto_multiplier: 0.5
+  macro_cpi_bullish_max: 0.2
+  macro_cpi_bearish_min: 0.4
+  macro_core_cpi_bullish_max: 0.3
+  macro_core_cpi_bearish_min: 0.4
+  macro_ppi_bullish_max: 0.2
+  macro_ppi_bearish_min: 0.4
+  macro_numeric_signal_min_abs: 0.4
+  exchange_state_multipliers:
+    investigating: 1.2
+    identified: 1.1
+    monitoring: 0.85
+    resolved: 0.45
+  crypto_relevance_terms:
+  - bitcoin
+  - btc
+  - crypto
+  - cryptocurrency
+  - stablecoin
+  - etf
+  - exchange
+  - coinbase
+  - kraken
+  - binance
+  regulation_crypto_terms:
+  - crypto
+  - digital asset
+  - bitcoin
+  - btc
+  - exchange
+  - stablecoin
+  - token
+  - etf
+  - blockchain
+  - custody
+  macro_commentary_terms:
+  - interview
+  - speech
+  - remarks
+  - plenary debate
+  - podcast
+  - op-ed
+  exchange_minor_terms:
+  - email notification
+  - account-related email
+  - guest checkout
+  - funding delays
+  - delayed sends
+  - delayed receives
+  exchange_core_terms:
+  - trading
+  - api
+  - websocket
+  - website
+  - transactions
+  - onramp
+  - derivatives
+  - connectivity
+  - latency
+  - degraded performance
+  - withdrawal
+  - deposit
+  - order
+  - orders
+  macro_positive_surprise_terms:
+  - lower than expected
+  - below expectations
+  - cooler than expected
+  - inflation eased
+  - disinflation
+  - rate cut
+  macro_negative_surprise_terms:
+  - higher than expected
+  - above expectations
+  - hotter than expected
+  - sticky inflation
+  - inflation accelerated
+  - rate hike
+  macro_in_line_terms:
+  - as expected
+  - in line with expectations
+  - in-line with expectations
+  - unchanged as expected
+  regulation_final_terms:
+  - approved
+  - approval granted
+  - order issued
+  - settled
+  - settlement
+  - lawsuit
+  - charges
+  - sued
+  - ban
+  - rejected
+  - denied
+  regulation_preliminary_terms:
+  - proposal
+  - proposed
+  - draft
+  - consultation
+  - comment period
+  - interview
+  - speech
+  - remarks
+keyword_rules:
+  category_strong_weight: 2.0
+  category_contextual_weight: 1.0
+  categories:
+    macro:
+    - inflation
+    - cpi
+    - pce
+    - interest rate
+    - rate cut
+    - rate hike
+    - jobs
+    - employment situation
+    - nonfarm payroll
+    - payrolls
+    - unemployment rate
+    - jolts
+    - payroll
+    - fomc
+    - ecb
+    - eurostat
+    - fed speech
+    - producer price index
+    - ppi
+    regulation:
+    - sec
+    - cftc
+    - regulation
+    - regulator
+    - compliance
+    - enforcement
+    - lawsuit
+    - litigation release
+    - proposed rule
+    - rulemaking
+    - ban
+    - approved
+    - approval
+    - probe
+    - cfius
+    - investigation
+    - market structure
+    - clarity act
+    - crypto bill
+    - digital asset bill
+    - charter
+    etf_institutional:
+    - etf
+    - etfs
+    - filing
+    - filings
+    - inflow
+    - inflows
+    - outflow
+    - outflows
+    - institution
+    - custody
+    - blackrock
+    - fidelity
+    exchange_incident:
+    - outage
+    - downtime
+    - maintenance
+    - degraded performance
+    - latency
+    - connectivity
+    - halted
+    - halt
+    - withdrawal
+    - deposit
+    - delayed sends
+    - delayed receives
+    - funding delays
+    - incident
+    - hacked
+    - exploit
+    - breach
+    - data breach
+    geopolitics_risk:
+    - war
+    - sanctions
+    - conflict
+    - missile
+    - geopolitical
+    - risk-off
+    stablecoins_liquidity:
+    - usdt
+    - usdc
+    - stablecoin
+    - depeg
+    - liquidity
+  categories_contextual:
+    macro:
+    - expected
+    - estimate
+    - guidance
+    regulation:
+    - proposal
+    - draft
+    - consultation
+    - probe
+    - investigation
+    exchange_incident:
+    - investigating
+    - monitoring
+    - resolved
+    - restored
+    - breach
+    - security
+    - exploit
+  polarity:
+    positive:
+    - rate cut
+    - dovish
+    - lower inflation
+    - etf approved
+    - etf approval
+    - inflow
+    - inflows
+    - legal clarity
+    - resumed
+    - upgrade complete
+    - rebound
+    - rebounds
+    - rally
+    - rises
+    - approval filing
+    negative:
+    - rate hike
+    - hawkish
+    - hotter inflation
+    - enforcement
+    - lawsuit
+    - rejected
+    - outage
+    - halt
+    - hacked
+    - exploit
+    - depeg
+    - breach
+    - data breach
+    - probe
+    - investigation
+    - loss
+    - losses
+    - outflow
+    - outflows
+    - decline
+    - declines
+    - drop
+    - drops
+    - slowdown
+    - weak
+    - warning
+    - caution
+  category_bias:
+    macro: 0
+    regulation: 0
+    etf_institutional: 1
+    exchange_incident: -1
+    geopolitics_risk: -1
+    stablecoins_liquidity: 0
+    other: 0
+  negation_terms:
+  - not
+  - 'no'
+  - never
+  - without
+  - denied
+  - false
+  uncertainty_terms:
+  - rumor
+  - rumour
+  - unconfirmed
+  - speculation
+  - reportedly
+  - alleged
+  - might
+  - could
+  - analyst
+  - analysts
+  - forecast
+  - forecasts
+  - prediction
+  - predictions
+  - price target
+  - price targets
+  - outlook
+  regulation_preliminary_terms:
+  - proposal
+  - proposed
+  - draft
+  - consultation
+  - comment period
+  regulation_final_terms:
+  - approved
+  - approval granted
+  - order issued
+  - rejected
+  - denied
+  - lawsuit
+  - charges
+  exchange_deescalation_terms:
+  - resolved
+  - monitoring
+  - restored
+  - mitigated
+  - contained
+  exchange_escalation_terms:
+  - investigating
+  - identified
+  - outage
+  - halt
+  - degraded
+  - latency
+  - connectivity
+  - hacked
+decay:
+  half_life_minutes: 720
+thresholds:
+  60m: 0.25
+  1440m: 0.45
+  10080m: 0.7
+  default: 0.25
+learning:
+  horizons:
+  - 5m
+  - 15m
+  - 60m
+  - 24h
+  - 1w
+  market:
+    endpoint: https://api.binance.com
+    symbol: BTCUSDT
+  model:
+    confidence_k: 10.0
+    max_effective_n: 200.0
+    feature_recency_half_life_days: 7.0
+    label_return_clip_abs: 0.25
+    label_deadzone_abs: 0.002
+    label_sqrt_time_normalize: false
+    label_volatility_adjust:
+      enabled: true
+      window_minutes: 360
+      min_returns: 20
+      target_volatility: 0.02
+      floor_volatility: 0.001
+      min_scale: 0.5
+      max_scale: 2.0
+    window_horizon_mix:
+      60m:
+        5m: 0.35
+        15m: 0.35
+        60m: 0.3
+      1440m:
+        15m: 0.15
+        60m: 0.35
+        24h: 0.5
+      10080m:
+        60m: 0.15
+        24h: 0.45
+        1w: 0.4
+      default:
+        60m: 1.0
+  arrow:
+    scale: 100.0
+    thresholds:
+      60m: 0.35
+      1440m: 0.8
+      10080m: 1.2
+      default: 0.35
+llm:
+  enabled: true
+  require_runtime: true
+  allow_degraded_start: true
+  model: gpt-4.1-mini
+  fallback_model: gpt-5-mini
+  max_items: 6
+  max_events: 5
+  snippet_chars: 280
+  timeout_seconds: 120
+  request_retries: 1
+  max_output_tokens: 900
+  request_cooldown_seconds: 600
+  cache_ttl_seconds: 7200
+  new_item_min_abs_impact: 1.0e-06
+  min_window_minutes: 60
+  short_window_mode: rule
+  fallback_to_rule_on_error: true
+hybrid:
+  rule_weight: 0.0325
+  llm_weight: 0.35
+  learn_weight: 0.6175
+  optimizer:
+    holdout_ratio: 0.2
+    min_holdout_samples: 50
+    require_holdout_improvement: true
+    min_holdout_improvement: 0.0
+    min_train_improvement: 0.0
+    max_share_shift: 0.5
+  no_signal_min_items: 3
+  no_signal_min_relevance_sum: 1.2
+  no_signal_disagreement_score_abs_factor: 1.2
+  evaluation:
+    walk_forward_min_train_samples: 60
+    walk_forward_step_samples: 25
+    walk_forward_grid_step: 0.1
+    trading_fee_bps: 2.0
+  tier1_exchange_sources:
+  - coinbase_status
+  - kraken_status
+  tier1_exchange_relevance: 0.7
+  keyword_strong_relevance: 1.0
+  keywords_strong:
+  - btc
+  - bitcoin
+  - crypto
+  - etf
+  - stablecoin
+  - exchange
+  - derivatives
+  - spot
+  - custody
+  source_default_relevance:
+    coinbase_status: 0.8
+    kraken_status: 0.8
+    fed: 0.2
+    ecb: 0.2
+    cftc: 0.4
+    sec: 0.4
+    sec_litigation: 0.4
+    coindesk: 0.6
+    cointelegraph: 0.55
+    decrypt: 0.6
+    theblock: 0.6
+    bitcoinmagazine: 0.55
+    newsbtc: 0.5
+    bls: 0.4
+    eurostat: 0.3
+    fed_speeches: 0.25
+    gdelt: 0.5
+  score_clip_abs:
+    rule: 2.5
+    llm: 1.5
+    learn: 2.0
+attribution:
+  enabled: true
+  llm_usage: true
+  event_detection:
+    horizons:
+    - 15m
+    - 60m
+    zscore_threshold: 2.0
+    min_abs_return: 0.004
+    cooldown_minutes: 45
+    max_events_per_day: 24
+    lookback_hours: 48
+    zscore_lookback_points: 96
+  candidate_window:
+    lookback_minutes: 180
+    lookahead_minutes: 15
+    max_candidates: 50
+  candidate_filters:
+    min_abs_impact: 0.05
+    min_abs_learn_score: 0.03
+    cluster_decay: 0.6
+    top_k: 5
+  scoring_weights:
+    time: 0.3
+    direction: 0.2
+    rule: 0.2
+    learn: 0.2
+    llm: 0.1
+  score_normalization:
+    time_decay_minutes: 90.0
+    rule_norm_abs: 0.6
+    learn_norm_abs: 0.02
+    llm_norm_abs: 0.6
+    source_factor_min: 0.5
+    source_factor_max: 1.5
+  thresholds:
+    news_driven_probability: 0.65
+    news_driven_top_score: 0.45
+    mixed_probability: 0.4
+reports:
+  hybrid_report_path: diagnostics/hybrid_eval_latest.json
+  hybrid_history_dir: diagnostics/hybrid_eval_history
+  source_quality_report_path: diagnostics/source_quality_latest.json
+  source_quality_history_dir: diagnostics/source_quality_history
+  alerts_report_path: diagnostics/alerts_latest.json
+  alerts_history_dir: diagnostics/alerts_history
+alerts:
+  freshness_minutes: 90
+  window_minutes: 180
+  min_items: 3
+  source_concentration_threshold: 0.9
+  hybrid_degraded_streak: 3
+  source_quality_degraded_streak: 3
+  source_quality_corr_drop_threshold: 0.08
+  fail_on: critical,high
+  webhook:
+    true: critical,high,quality
+    timeout_seconds: 5
+    retries: 3
+    backoff_seconds: 2
+    cooldown_seconds: 900
+    state_path: diagnostics/webhook_state.json
+    max_alerts: 10

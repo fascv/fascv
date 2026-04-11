@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodic Binance Trade Mirror Sync
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+Persistent=true
+Unit=binance-trade-mirror.service
+
+[Install]
+WantedBy=timers.target

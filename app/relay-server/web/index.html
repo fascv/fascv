@@ -1,0 +1,879 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Trade Live Dashboard</title>
+  <style>
+    :root {
+      --bg: #141414;
+      --panel: #1f1f1f;
+      --panel-2: #242424;
+      --text: #f1f1f1;
+      --muted: #bbbbbb;
+      --gold: #d4af37;
+      --gold-2: #f6da80;
+      --red: #ff7676;
+      --green: #7bdf94;
+      --border: #333;
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      overflow-y: scroll;
+    }
+
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: radial-gradient(1200px 600px at 50% -100px, #3b2f0f 0%, var(--bg) 55%);
+      color: var(--text);
+    }
+
+    .wrap {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 16px;
+    }
+
+    .title {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .coin {
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      background: linear-gradient(145deg, var(--gold-2), var(--gold));
+      box-shadow: 0 0 16px rgba(212, 175, 55, 0.28);
+      display: grid;
+      place-items: center;
+      color: #35280a;
+      font-weight: 800;
+      font-size: 20px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 12px;
+    }
+
+    .card {
+      background: linear-gradient(180deg, var(--panel), var(--panel-2));
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+    }
+
+    .controls { grid-column: span 12; }
+    .rotation { grid-column: span 12; }
+    .live { grid-column: span 12; }
+    .intrade { grid-column: span 12; }
+    .trades { grid-column: span 12; }
+    .strategy-live { grid-column: span 12; }
+    .symbols { grid-column: span 12; }
+    .bundles { grid-column: span 12; }
+
+    @media (min-width: 980px) {
+      .rotation { grid-column: span 8; }
+      .live { grid-column: span 12; }
+      .intrade { grid-column: span 12; }
+      .trades { grid-column: span 12; }
+      .symbols { grid-column: span 12; }
+      .bundles { grid-column: span 12; }
+    }
+
+    .control-row {
+      display: grid;
+      grid-template-columns: repeat(1, 1fr);
+      gap: 10px;
+    }
+
+    @media (min-width: 760px) {
+      .control-row {
+        grid-template-columns: 2fr 1fr 1fr;
+        align-items: end;
+      }
+    }
+
+    label {
+      font-size: 12px;
+      color: var(--muted);
+      display: block;
+      margin-bottom: 6px;
+    }
+
+    input {
+      width: 100%;
+      padding: 10px 11px;
+      border-radius: 8px;
+      border: 1px solid #444;
+      background: #171717;
+      color: var(--text);
+      outline: none;
+    }
+
+    input:focus {
+      border-color: var(--gold);
+      box-shadow: 0 0 0 2px rgba(212, 175, 55, 0.25);
+    }
+
+    button {
+      border: 0;
+      border-radius: 8px;
+      padding: 10px 14px;
+      cursor: pointer;
+      background: linear-gradient(145deg, var(--gold-2), var(--gold));
+      color: #2e2309;
+      font-weight: 700;
+    }
+
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+
+    .status {
+      margin-top: 10px;
+      font-size: 13px;
+      color: var(--muted);
+      min-height: 18px;
+    }
+
+    .status.error { color: var(--red); }
+    .status.ok { color: var(--green); }
+
+    .kpi { margin-bottom: 8px; font-size: 14px; color: var(--muted); }
+    .kpi strong { color: var(--text); }
+
+    .trade-summary-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px 12px;
+      margin-bottom: 10px;
+      padding: 10px;
+      border: 1px solid #333;
+      border-radius: 10px;
+      background: rgba(20, 20, 20, 0.5);
+    }
+
+    @media (max-width: 700px) {
+      .trade-summary-grid {
+        grid-template-columns: repeat(1, minmax(0, 1fr));
+      }
+    }
+
+    .trade-summary-grid .kpi {
+      margin: 0;
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    th, td {
+      border-bottom: 1px solid #333;
+      padding: 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th { color: var(--muted); font-weight: 600; }
+
+    .table-wrap {
+      overflow: auto;
+      max-height: 430px;
+    }
+
+    .table-wrap-live {
+      overflow: visible !important;
+      max-height: none !important;
+      height: auto !important;
+      min-height: 0;
+    }
+
+    .table-wrap-live table {
+      table-layout: fixed;
+      font-size: 12px;
+    }
+
+    .table-wrap-live th,
+    .table-wrap-live td {
+      padding: 5px 6px;
+      line-height: 1.2;
+      word-break: break-word;
+    }
+
+    .table-wrap-live .small {
+      font-size: 11px;
+      line-height: 1.2;
+    }
+
+    .table-wrap a,
+    .table-wrap-live a {
+      color: var(--gold-2);
+      text-decoration: none;
+      font-weight: 600;
+    }
+
+    .table-wrap a:hover,
+    .table-wrap-live a:hover {
+      color: var(--gold);
+      text-decoration: underline;
+    }
+
+    .small {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .badge {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .badge.ok {
+      background: rgba(123, 223, 148, 0.2);
+      color: var(--green);
+    }
+
+    .badge.no {
+      background: rgba(255, 118, 118, 0.2);
+      color: var(--red);
+    }
+
+    .badge.warn {
+      background: rgba(212, 175, 55, 0.2);
+      color: var(--gold-2);
+    }
+
+    .pnl-pos { color: var(--green); font-weight: 700; }
+    .pnl-neg { color: var(--red); font-weight: 700; }
+    .pnl-flat { color: var(--muted); font-weight: 700; }
+
+    .row-live-open td {
+      background: rgba(123, 223, 148, 0.06);
+    }
+
+    .row-live-selected td {
+      background: rgba(212, 175, 55, 0.06);
+    }
+
+    .row-live-down td {
+      background: rgba(255, 118, 118, 0.08);
+    }
+
+    .row-live-candidate-header td {
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--muted);
+      font-weight: 700;
+      border-top: 1px solid #3a3a3a;
+    }
+
+    .row-live-candidate td {
+      background: rgba(212, 175, 55, 0.05);
+    }
+
+    .row-strategy-pause td {
+      background: rgba(255, 118, 118, 0.08);
+    }
+
+    .row-strategy-primary td {
+      background: rgba(123, 223, 148, 0.05);
+    }
+
+    .row-strategy-secondary td {
+      background: rgba(212, 175, 55, 0.06);
+    }
+
+    .control-actions {
+      margin-top: 10px;
+      display: flex;
+      justify-content: flex-end;
+    }
+
+    .rotation-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+    }
+
+    .legacy-hidden {
+      display: none;
+    }
+
+    .dir-up { color: var(--green); font-weight: 700; }
+    .dir-down { color: var(--red); font-weight: 700; }
+    .dir-flat { color: var(--muted); font-weight: 700; }
+
+    .intrade .table-wrap-live table {
+      table-layout: fixed;
+      width: 100%;
+      min-width: 100%;
+    }
+
+    .intrade .table-wrap-live th,
+    .intrade .table-wrap-live td {
+      padding: 4px 4px;
+    }
+
+    .intrade .table-wrap-live {
+      overflow-x: hidden !important;
+      overflow-y: visible !important;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .intrade .table-wrap-live th:nth-child(1),
+    .intrade .table-wrap-live td:nth-child(1) { width: 7%; }
+
+    .intrade .table-wrap-live th:nth-child(2),
+    .intrade .table-wrap-live td:nth-child(2) { width: 7%; }
+
+    .intrade .table-wrap-live th:nth-child(3),
+    .intrade .table-wrap-live td:nth-child(3) { width: 8%; }
+
+    .intrade .table-wrap-live th:nth-child(4),
+    .intrade .table-wrap-live td:nth-child(4) { width: 70%; }
+
+    .intrade .table-wrap-live th:nth-child(5),
+    .intrade .table-wrap-live td:nth-child(5) { width: 8%; }
+
+    .live .table-wrap-live {
+      overflow-x: auto !important;
+      overflow-y: visible !important;
+    }
+
+    .live .live-table {
+      width: 100%;
+      min-width: 100%;
+      table-layout: fixed;
+    }
+
+    .live .live-table col.live-col-symbol { width: 8%; }
+    .live .live-table col.live-col-status { width: 11%; }
+    .live .live-table col.live-col-entry { width: 14%; }
+    .live .live-table col.live-col-exit { width: 14%; }
+    .live .live-table col.live-col-pnl { width: 14%; }
+    .live .live-table col.live-col-need { width: 12%; }
+    .live .live-table col.live-col-roll { width: 17%; }
+    .live .live-table col.live-col-stand { width: 10%; }
+
+    .live .live-table th,
+    .live .live-table td {
+      padding: 6px 4px;
+    }
+
+    .live .live-table tbody tr {
+      min-height: 56px;
+    }
+
+    .live .live-roll-sub {
+      margin-top: 6px;
+      font-size: inherit;
+      line-height: 1.25;
+    }
+
+    .live .live-active-label {
+      color: var(--gold);
+      font-weight: 700;
+    }
+
+    .live .live-candidate-block {
+      margin-top: 10px;
+      padding-top: 8px;
+      border-top: 1px solid #333;
+    }
+
+    .live .live-candidate-table {
+      width: 100%;
+      min-width: 100%;
+      table-layout: fixed;
+    }
+
+    .live .live-candidate-table col.live-cand-col-symbol { width: 12%; }
+    .live .live-candidate-table col.live-cand-col-status { width: 18%; }
+    .live .live-candidate-table col.live-cand-col-reason { width: 52%; }
+    .live .live-candidate-table col.live-cand-col-stand { width: 18%; }
+
+    .live .live-candidate-table th,
+    .live .live-candidate-table td {
+      padding: 5px 4px;
+      line-height: 1.25;
+    }
+
+    .live .live-candidate-table tbody td {
+      background: rgba(212, 175, 55, 0.05);
+      vertical-align: top;
+    }
+
+    .intrade .table-wrap-live tbody tr {
+      height: 96px;
+    }
+
+    .intrade-chart-cell {
+      width: 100%;
+      min-width: 0;
+    }
+
+    .intrade-chart-wrap {
+      width: 100%;
+      height: 80px;
+    }
+
+    .intrade-mobile-meta {
+      display: none;
+    }
+
+    .trend-spark {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .trend-midline {
+      stroke: #ffeb3b;
+      stroke-width: 1;
+      stroke-dasharray: 4 3;
+      opacity: 0.85;
+    }
+
+    .trend-line-up {
+      stroke: var(--green);
+      stroke-width: 2;
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .trend-line-down {
+      stroke: var(--red);
+      stroke-width: 2;
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .trend-line-flat {
+      stroke: var(--gold-2);
+      stroke-width: 2;
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    @media (max-width: 760px) {
+      .wrap {
+        padding: 10px;
+      }
+
+      .title {
+        gap: 10px;
+        margin-bottom: 10px;
+        align-items: flex-start;
+      }
+
+      .card {
+        padding: 10px;
+      }
+
+      .control-actions {
+        justify-content: stretch;
+      }
+
+      .control-actions button {
+        width: 100%;
+      }
+
+      .rotation-head {
+        align-items: flex-start;
+      }
+
+      .rotation-head > div:last-child {
+        width: 100%;
+      }
+
+      .rotation-head button {
+        width: 100%;
+      }
+
+      .table-wrap,
+      .table-wrap-live {
+        overflow-x: auto !important;
+        overflow-y: visible !important;
+        max-height: none !important;
+        -webkit-overflow-scrolling: touch;
+      }
+
+      .table-wrap-live table {
+        table-layout: auto !important;
+        min-width: 560px;
+      }
+
+      .table-wrap-live th,
+      .table-wrap-live td {
+        white-space: nowrap;
+        word-break: normal;
+        padding: 6px 7px;
+      }
+
+      .live .table-wrap-live table {
+        min-width: 620px;
+      }
+
+      .live .live-candidate-table {
+        min-width: 620px;
+      }
+
+      .intrade .table-wrap-live table {
+        min-width: 100%;
+      }
+
+      .intrade .table-wrap-live {
+        overflow-x: hidden !important;
+      }
+
+      .intrade .table-wrap-live table,
+      .intrade .table-wrap-live thead,
+      .intrade .table-wrap-live tbody,
+      .intrade .table-wrap-live tr,
+      .intrade .table-wrap-live td {
+        display: block;
+        width: 100%;
+      }
+
+      .intrade .table-wrap-live thead {
+        display: none;
+      }
+
+      .intrade .table-wrap-live tbody tr {
+        height: auto;
+        border: 1px solid #333;
+        border-radius: 10px;
+        margin-bottom: 10px;
+        padding: 8px;
+        background: rgba(20, 20, 20, 0.45);
+      }
+
+      .intrade .table-wrap-live tbody td {
+        border: 0;
+        padding: 5px 0;
+        white-space: normal;
+      }
+
+      .intrade .table-wrap-live tbody td::before {
+        content: attr(data-label) ": ";
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 600;
+      }
+
+      .intrade .table-wrap-live tbody td:nth-child(2),
+      .intrade .table-wrap-live tbody td:nth-child(3),
+      .intrade .table-wrap-live tbody td:nth-child(5) {
+        display: none;
+      }
+
+      .intrade .table-wrap-live tbody td:nth-child(1),
+      .intrade .table-wrap-live tbody td:nth-child(4) {
+        display: block;
+        width: 100%;
+      }
+
+      .intrade .table-wrap-live tbody td:nth-child(1)::before,
+      .intrade .table-wrap-live tbody td:nth-child(4)::before {
+        display: none;
+      }
+
+      .intrade-mobile-meta {
+        display: block;
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 11px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .intrade .table-wrap-live tbody td.intrade-chart-cell {
+        padding-top: 0;
+      }
+
+      .intrade .table-wrap-live tbody td.intrade-chart-cell::before {
+        content: none;
+        display: none;
+      }
+
+      .intrade-chart-wrap {
+        height: 72px;
+      }
+
+      .trades .table-wrap table {
+        min-width: 640px;
+      }
+
+      .live table th:nth-child(8),
+      .live table td:nth-child(8) {
+        display: none;
+      }
+
+      .small {
+        font-size: 11px;
+      }
+
+      .trade-summary-grid .kpi {
+        white-space: normal;
+      }
+    }
+
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="title">
+      <div class="coin">B</div>
+      <div>
+        <div style="font-size:24px;font-weight:700;">Trade Live Dashboard</div>
+        <div class="small">Live-Rotation, Strategien, offene Coins, Entry/Exit-Werte und Tagesreport</div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <section class="card controls">
+        <div class="control-row">
+          <div>
+            <label for="token">Relay Token</label>
+            <input id="token" type="password" placeholder="RELAY_TOKEN">
+          </div>
+          <div>
+            <label for="reportDate">Tag</label>
+            <input id="reportDate" type="date">
+          </div>
+          <div>
+            <label for="reportSymbol">Symbol (optional)</label>
+            <input id="reportSymbol" type="text" placeholder="z.B. ADA oder ADAUSDC">
+          </div>
+        </div>
+        <div class="control-actions">
+          <button id="loadReportBtn" type="button">Tagesauswertung laden</button>
+        </div>
+        <div id="status" class="status"></div>
+      </section>
+
+      <section class="card rotation legacy-hidden">
+        <div class="rotation-head">
+          <div style="font-size:18px;font-weight:700;">Rotation 1 Sweet / 2 Makro / 3 Co/Vol</div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <button id="loadRotationBtn" type="button">Rotation laden</button>
+          </div>
+        </div>
+        <div id="rotationMeta" class="small" style="margin-bottom:8px;">Stand: -</div>
+        <div id="rotationStatus" class="status"></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Lane</th>
+                <th>1 Sweet</th>
+                <th>2 Makro</th>
+                <th>3 Co/Vol</th>
+                <th>Zusatzschutz</th>
+                <th>Gate-Reason</th>
+              </tr>
+            </thead>
+            <tbody id="rotationRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card live">
+        <div class="rotation-head">
+          <div style="font-size:18px;font-weight:700;">Live Coins</div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <button id="loadLiveBtn" type="button">Live laden</button>
+          </div>
+        </div>
+        <div id="liveMeta" class="small" style="margin-bottom:8px;">Stand: -</div>
+        <div id="liveStatus" class="status"></div>
+        <div class="table-wrap-live">
+          <table class="live-table">
+            <colgroup>
+              <col class="live-col-symbol">
+              <col class="live-col-status">
+              <col class="live-col-entry">
+              <col class="live-col-exit">
+              <col class="live-col-pnl">
+              <col class="live-col-need">
+              <col class="live-col-roll">
+              <col class="live-col-stand">
+            </colgroup>
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Status</th>
+                <th>Entry</th>
+                <th>Exit / Aktuell</th>
+                <th>Gewinn / Verlust</th>
+                <th>Bis Exit (USDC)</th>
+                <th>Roll / Ziel</th>
+                <th>Stand</th>
+              </tr>
+            </thead>
+            <tbody id="liveRows"></tbody>
+          </table>
+        </div>
+        <div id="liveCandidateBlock" class="live-candidate-block" style="display:none;">
+          <div id="liveCandidateMeta" class="small" style="margin-bottom:6px;"></div>
+          <div class="table-wrap-live">
+            <table class="live-candidate-table">
+              <colgroup>
+                <col class="live-cand-col-symbol">
+                <col class="live-cand-col-status">
+                <col class="live-cand-col-reason">
+                <col class="live-cand-col-stand">
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>Kandidat</th>
+                  <th>Status</th>
+                  <th>Grund (noch kein Kauf)</th>
+                  <th>Stand</th>
+                </tr>
+              </thead>
+              <tbody id="liveCandidateRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="card intrade">
+        <div class="rotation-head">
+          <div style="font-size:18px;font-weight:700;">Aktive Trades</div>
+        </div>
+        <div id="inTradeMeta" class="small" style="margin-bottom:8px;">Im Trade: -</div>
+        <div class="table-wrap-live">
+          <table class="intrade-table">
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Coin-Range-%</th>
+                <th>10m Δ</th>
+                <th></th>
+                <th>Haltezeit</th>
+              </tr>
+            </thead>
+            <tbody id="inTradeRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card trades">
+        <div class="rotation-head">
+          <div style="font-size:18px;font-weight:700;">Trades (Kauf / Verkauf / Ergebnis)</div>
+        </div>
+        <div class="trade-summary-grid">
+          <div id="period" class="kpi">Zeitraum: <strong>-</strong></div>
+          <div id="kpiBundles" class="kpi">Buendel: <strong>0</strong></div>
+          <div id="kpiSymbols" class="kpi">Symbole: <strong>0</strong></div>
+          <div id="kpiBuy" class="kpi">Einkauf brutto: <strong>0.00 USDC</strong></div>
+          <div id="kpiSell" class="kpi">Verkauf brutto: <strong>0.00 USDC</strong></div>
+          <div id="kpiProceeds" class="kpi">Netto-PnL: <strong>0.00 USDC</strong></div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Kauf (Preis × Menge)</th>
+                <th>Verkauf (Preis × Menge + Uhrzeit)</th>
+                <th>Gewinn / Verlust</th>
+              </tr>
+            </thead>
+            <tbody id="tradeRows"></tbody>
+            <tfoot>
+              <tr>
+                <th colspan="3">Gesamt</th>
+                <th id="tradeTotalPnl">0,00 USDC</th>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </section>
+
+      <section class="card strategy-live legacy-hidden">
+        <div class="rotation-head">
+          <div style="font-size:18px;font-weight:700;">Strategien Live</div>
+        </div>
+        <div id="strategyMeta" class="small" style="margin-bottom:8px;">Meta-Stand: -</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Strategie</th>
+                <th>Gewicht / Aktion</th>
+                <th>Trades</th>
+                <th>PnL / Winrate</th>
+                <th>Fehlstarts / Exits</th>
+                <th>Kandidaten</th>
+              </tr>
+            </thead>
+            <tbody id="strategyRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card symbols legacy-hidden">
+        <div style="font-size:18px;font-weight:700;margin-bottom:8px;">Pro Symbol</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Buendel</th>
+                <th>Einkauf brutto</th>
+                <th>Verkauf brutto</th>
+                <th>Netto-PnL</th>
+              </tr>
+            </thead>
+            <tbody id="symbolRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card bundles legacy-hidden">
+        <div style="font-size:18px;font-weight:700;margin-bottom:8px;">Chronologische Buy/Sell-Buendel</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Menge</th>
+                <th>Einkauf Uhrzeit</th>
+                <th>Verkauf Uhrzeit</th>
+                <th>Einkauf brutto</th>
+                <th>Verkauf brutto</th>
+                <th>Netto-PnL</th>
+              </tr>
+            </thead>
+            <tbody id="bundleRows"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=20260321k"></script>
+</body>
+</html>

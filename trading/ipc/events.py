@@ -52,8 +52,9 @@ class Heartbeat:
 @dataclass
 class ControlCommand:
     ts: datetime
-    action: str  # "START", "STOP", "PAUSE", "RESUME", "CANCEL_ALL", "RELOAD"
+    action: str  # "START", "STOP", "PAUSE", "RESUME", "CANCEL_ALL", "RELOAD", "SET_BUDGET", "SYNC_ACCOUNT"
     reason: Optional[str] = None
+    payload: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -68,3 +69,14 @@ class JournalEvent:
     ts: datetime
     event_type: str
     payload: Dict[str, Any]
+
+
+@dataclass
+class NewsEvent:
+    ts: datetime
+    symbol: str
+    sentiment_score: float
+    impact_score: float
+    source_count: int
+    event_id: Optional[str] = None
+    meta: Dict[str, Any] = field(default_factory=dict)

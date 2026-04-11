@@ -1,0 +1,9 @@
+[Unit]
+Description=Codex Rotation Profit Guard
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Schreibtisch/codex/bitcoin2
+ExecStart=/usr/bin/python3 scripts/rotation_profit_guard.py --apply
+

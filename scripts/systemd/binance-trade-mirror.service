@@ -1,0 +1,9 @@
+[Unit]
+Description=Sync Binance Trade Mirror
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/andi/Schreibtisch/codex/bitcoin2
+ExecStart=/usr/bin/python3 /home/andi/Schreibtisch/codex/bitcoin2/scripts/sync_binance_trade_mirror.py --all-active --journals --hours 36

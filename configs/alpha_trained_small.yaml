@@ -1,0 +1,4 @@
+alpha:
+  lookback: 2
+  threshold_bps: 1.0
+  scale: 0.5

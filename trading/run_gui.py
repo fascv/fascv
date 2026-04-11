@@ -25,7 +25,7 @@ def _cfg(d: Dict[str, Any], path: str, default: Any) -> Any:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Start engine with built-in web GUI")
-    parser.add_argument("--mode", choices=["paper", "live"], default="paper")
+    parser.add_argument("--mode", choices=["paper", "live", "sim"], default="paper")
     parser.add_argument("--config", default="configs/paper.yaml")
     parser.add_argument("--env", default=".env")
     parser.add_argument("--host", default=None)
@@ -36,6 +36,8 @@ def main() -> None:
     cfg = load_config(args.config).raw
     cfg.setdefault("control", {})
     cfg["control"]["enabled"] = True
+    cfg.setdefault("runtime", {})
+    cfg["runtime"]["config_path"] = os.path.abspath(args.config)
     if args.host is not None:
         cfg["control"]["host"] = args.host
     if args.port is not None:

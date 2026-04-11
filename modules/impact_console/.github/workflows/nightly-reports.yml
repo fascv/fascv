@@ -1,0 +1,72 @@
+name: Nightly Reports
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "15 5 * * *"
+
+jobs:
+  build-reports:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Generate Reports
+        run: |
+          mkdir -p diagnostics
+          set +e
+          python -m btc_news_arrow.cli hybrid-report \
+            --report-path diagnostics/hybrid_eval_latest.json \
+            --history-dir diagnostics/hybrid_eval_history \
+            --lookback-days 30 \
+            --min-samples 20
+          echo "hybrid_exit=$?" >> "$GITHUB_ENV"
+
+          python -m btc_news_arrow.cli source-quality-report \
+            --report-path diagnostics/source_quality_latest.json \
+            --history-dir diagnostics/source_quality_history \
+            --lookback-days 30 \
+            --min-samples-per-source 5 \
+            --top-n 25
+          echo "source_quality_exit=$?" >> "$GITHUB_ENV"
+
+          python -m btc_news_arrow.cli alerts-check \
+            --hybrid-report-path diagnostics/hybrid_eval_latest.json \
+            --hybrid-history-dir diagnostics/hybrid_eval_history \
+            --source-quality-report-path diagnostics/source_quality_latest.json \
+            --source-quality-history-dir diagnostics/source_quality_history \
+            --output-path diagnostics/alerts_latest.json \
+            --history-dir diagnostics/alerts_history \
+            --fail-on ""
+          echo "alerts_exit=$?" >> "$GITHUB_ENV"
+          exit 0
+
+      - name: Job Summary
+        if: always()
+        run: |
+          {
+            echo "## Nightly Report Generation"
+            echo ""
+            echo "- hybrid-report exit: ${hybrid_exit:-n/a}"
+            echo "- source-quality-report exit: ${source_quality_exit:-n/a}"
+            echo "- alerts-check exit: ${alerts_exit:-n/a}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Diagnostics Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-diagnostics-${{ github.run_id }}
+          path: diagnostics
+          if-no-files-found: warn

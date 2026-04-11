@@ -1,0 +1,18 @@
+[Unit]
+Description=Codex Shadow USDC Scalp Scan
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Schreibtisch/codex/bitcoin2
+ExecStart=%h/Schreibtisch/codex/bitcoin2/scripts/run_shadow_usdc_scalp_scan_loop.sh
+Restart=on-failure
+RestartSec=20
+SuccessExitStatus=130 143 SIGINT SIGTERM
+TimeoutStopSec=30
+KillSignal=SIGINT
+KillMode=mixed
+
+[Install]
+WantedBy=default.target

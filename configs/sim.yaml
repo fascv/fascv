@@ -1,0 +1,129 @@
+general:
+  starting_cash_eur: 150.0
+
+data:
+  default_micro:
+    spread_bps: 8.0
+    depth: 100000.0
+    imbalance: 0.0
+
+features:
+  return_window: 1
+  atr_window: 14
+  volume_z_window: 20
+
+cost:
+  # Kraken spot fees depend on volume/tier. These defaults are a reasonable baseline:
+  # maker=0.16%, taker=0.26% (16/26 bps). Adjust to match your account if needed.
+  maker_fee_bps: 16.0
+  taker_fee_bps: 26.0
+  slippage_base_bps: 0.5
+  slippage_vol_mult: 0.01
+  spread_component_factor: 0.5
+
+gate:
+  safety_margin_bps: 0.5
+  max_spread_bps: 20.0
+  max_atr_bps: 250.0
+  session_start_utc: 0
+  session_end_utc: 24
+  stale_seconds: 1800
+  block_on_high_news_impact: false
+  max_news_impact: 0.8
+  max_news_age_sec: 1800
+  news_safety_margin_bps: 0.0
+
+alpha:
+  lookback: 3
+  threshold_bps: 0.5
+  scale: 5.0
+  # Auto-optimized simulation parameters (alpha/gate/risk) are loaded from this overlay.
+  override_path: configs/sim_optimized.yaml
+
+risk:
+  max_exposure_eur: 50.0
+  vol_target_bps: 100.0
+  daily_loss_limit_eur: 8.0
+  max_drawdown_pct: 10.0
+  cooldown_bars: 3
+  allow_short: false
+  # In sim we want the entered budget amount to be deployed fully when a position is taken.
+  use_vol_scaling: false
+  use_gate_size_factor: false
+
+order:
+  type: market
+  post_only: false
+  limit_offset_bps: 2.0
+  min_trade_btc: 0.00005
+  slice_count: 1
+  # Cycle mode: when flat, enter once with this notional (EUR). When in position, exit fully back to flat.
+  cycle_trade_eur: 20.0
+
+# Sim execution: live market data, virtual fills via BacktestSimulator in exec.
+execution:
+  latency_bars: 0
+  partial_fill_ratio: 1.0
+  slippage_bps: 1.0
+
+md:
+  pair: BTC/EUR
+  ws_url: wss://ws.kraken.com/v2
+  stale_seconds: 10
+  stale_book_seconds: 10
+  stale_trade_seconds: 15
+  reconnect_min: 1
+  reconnect_max: 30
+  depth: 100
+  interval_seconds: 5
+
+core:
+  trading_enabled: true
+  stale_seconds: 20
+  max_orders_per_min: 20
+  rate_limit_pause_sec: 2.0
+
+exec:
+  rate_limit_per_sec: 1.0
+  reconcile_interval_sec: 30.0
+  canary_mode: false
+  deadman_timeout_sec: 60
+  deadman_tick_sec: 20
+  deadman_in_paper: false
+  rate_limit_pause_sec: 2.0
+  owntrades_dedupe_size: 50000
+
+journal:
+  db_path: logs/journal_sim.db
+  json_path: logs/journal_sim.jsonl
+
+ipc:
+  market_queue_size: 1
+  impact_queue_size: 1
+  order_queue_size: 100
+  exec_report_queue_size: 200
+  journal_queue_size: 10000
+  telemetry_queue_size: 1000
+  heartbeat_queue_size: 1000
+  heartbeat_timeout: 5.0
+
+impact:
+  enabled: true
+  source: api
+  symbol: BTC/EUR
+  interval_seconds: 15
+  timeout_seconds: 3
+  api_url: "http://127.0.0.1:8011/signal/trading?window=1h&mode=auto"
+  file_path: modules/impact_console/diagnostics/arrow_1h.json
+  fallback_to_file: true
+
+# News/impact influence (applies in sim and live when impact is enabled).
+news:
+  # Adds an extra edge component in bps: edge += edge_scale_bps * news_sentiment * news_impact
+  edge_scale_bps: 20.0
+
+control:
+  enabled: true
+  host: 127.0.0.1
+  port: 8000
+  stale_warn_sec: 12

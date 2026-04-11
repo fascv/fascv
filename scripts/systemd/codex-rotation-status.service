@@ -1,0 +1,7 @@
+[Unit]
+Description=Codex Rotation Status Snapshot
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Schreibtisch/codex/bitcoin2
+ExecStart=/bin/bash -lc 'python3 scripts/rotation_auto_coin_selector.py --json >/dev/null && python3 scripts/rotation_status.py --write logs/rotation_status.txt >/dev/null'

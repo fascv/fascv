@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Codex Rotation Watch Pool Refresh every 5 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Unit=codex-rotation-watch-pool-refresh.service
+
+[Install]
+WantedBy=timers.target

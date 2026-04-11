@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh Codex rotation status snapshot every 5 minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+Persistent=true
+Unit=codex-rotation-status.service
+
+[Install]
+WantedBy=timers.target

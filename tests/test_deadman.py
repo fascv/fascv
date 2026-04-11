@@ -78,11 +78,13 @@ class TestDeadman(unittest.TestCase):
             ctx.q_control_exec.put(ControlCommand(ts=datetime.now(timezone.utc), action="STOP", reason="test"))
             deadline = time.time() + 3.0
             timeouts = []
+            events = []
             while time.time() < deadline:
                 while not ctx.q_journal.empty():
                     evt = ctx.q_journal.get_nowait()
                     if evt.event_type == "deadman":
                         timeouts.append(evt.payload.get("timeout"))
+                        events.append(evt.payload.get("event"))
                 if 0 in timeouts:
                     break
                 time.sleep(0.1)
@@ -90,6 +92,7 @@ class TestDeadman(unittest.TestCase):
             t.join(timeout=1.0)
 
             self.assertIn(0, timeouts)
+            self.assertIn("disable", events)
         finally:
             execp.KrakenRestClient = original_rest
             execp.OpenOrdersWS = original_oo

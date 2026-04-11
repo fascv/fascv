@@ -1,0 +1,58 @@
+gate:
+  safety_margin_bps: 1.5
+  max_spread_bps: 12.0
+  max_atr_bps: 300.0
+risk:
+  max_exposure_eur: 15.0
+  vol_target_bps: 90.0
+  cooldown_bars: 8
+  allow_short: true
+  use_vol_scaling: true
+  use_gate_size_factor: true
+  entry_edge_bps: 4.0
+  exit_edge_bps: 2.0
+  min_hold_bars: 12
+  require_break_even_for_exit: true
+  min_exit_profit_bps: 40.0
+order:
+  type: limit
+  post_only: true
+  limit_offset_bps: 5.0
+  cycle_trade_eur: 15.0
+alpha:
+  type: auto
+  auto:
+    trend:
+      lookback: 2
+      threshold_bps: 2.0
+      scale: 10.0
+    mean_reversion:
+      lookback: 6
+      threshold_bps: 6.0
+      scale: 5.0
+      max_edge_bps: 80.0
+    breakout:
+      lookback: 8
+      trigger_bps: 30.0
+      scale: 3.0
+      max_edge_bps: 0.0
+    swing:
+      lookback: 22
+      buy_band: 0.4
+      sell_band: 0.65
+      momentum_lookback: 7
+      reversal_threshold_bps: 0.8
+      edge_scale: 3.0
+      min_range_bps: 60.0
+      max_edge_bps: 300.0
+    regime:
+      lookback: 10
+      trend_momentum_bps: 30.0
+      range_momentum_bps: 1.0
+      high_vol_atr_bps: 350.0
+      low_vol_atr_bps: 50.0
+      breakout_return_bps: 36.0
+      default_regime: range
+      trend_strategy: trend
+      range_strategy: mean_reversion
+      breakout_strategy: trend

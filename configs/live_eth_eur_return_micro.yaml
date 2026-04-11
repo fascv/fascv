@@ -1,0 +1,139 @@
+general:
+  starting_cash_eur: 150.0
+
+data:
+  default_micro:
+    spread_bps: 8.0
+    depth: 100000.0
+    imbalance: 0.0
+
+features:
+  return_window: 1
+  atr_window: 14
+  volume_z_window: 20
+
+cost:
+  maker_fee_bps: 16.0
+  taker_fee_bps: 26.0
+  slippage_base_bps: 0.5
+  slippage_vol_mult: 0.01
+  spread_component_factor: 0.5
+
+gate:
+  safety_margin_bps: 0.25
+  max_spread_bps: 16.0
+  max_atr_bps: 250.0
+  session_start_utc: 0
+  session_end_utc: 24
+  stale_seconds: 1800
+  block_on_high_news_impact: false
+  max_news_impact: 0.8
+  max_news_age_sec: 1800
+  news_safety_margin_bps: 0.0
+
+alpha:
+  type: auto
+  override_path: configs/sim_optimized_professional_governed_eth_eur_return_micro.yaml
+
+risk:
+  max_exposure_eur: 5.0
+  vol_target_bps: 120.0
+  daily_loss_limit_eur: 1.0
+  max_drawdown_pct: 10.0
+  cooldown_bars: 4
+  allow_short: false
+  use_vol_scaling: false
+  use_gate_size_factor: false
+  entry_edge_bps: 8.0
+  exit_edge_bps: -2.0
+  min_hold_bars: 4
+  require_break_even_for_exit: true
+  min_exit_profit_bps: 8.0
+
+order:
+  type: market
+  post_only: false
+  limit_offset_bps: 2.0
+  min_trade_btc: 0.00005
+  slice_count: 1
+  cycle_trade_eur: 5.0
+
+execution:
+  latency_bars: 0
+  partial_fill_ratio: 1.0
+  slippage_bps: 1.0
+
+md:
+  pair: ETH/EUR
+  ws_url: wss://ws.kraken.com/v2
+  stale_seconds: 10
+  stale_book_seconds: 10
+  stale_trade_seconds: 15
+  reconnect_min: 1
+  reconnect_max: 30
+  depth: 100
+  interval_seconds: 30
+
+core:
+  trading_enabled: true
+  stale_seconds: 40
+  max_orders_per_min: 20
+  rate_limit_pause_sec: 2.0
+
+exec:
+  rate_limit_per_sec: 1.0
+  reconcile_interval_sec: 30.0
+  canary_mode: false
+  ws_auth_url: wss://ws-auth.kraken.com
+  deadman_timeout_sec: 60
+  deadman_tick_sec: 20
+  deadman_in_paper: false
+  rate_limit_pause_sec: 2.0
+  owntrades_dedupe_size: 50000
+  balance_refresh_on_owntrades: true
+  balance_refresh_debounce_sec: 30
+  balance_refresh_sec: 900
+  balance_nonzero_only: true
+
+journal:
+  db_path: logs/journal_live_eth_return_micro.db
+  json_path: logs/journal_live_eth_return_micro.jsonl
+
+ipc:
+  market_queue_size: 1
+  impact_queue_size: 1
+  order_queue_size: 100
+  exec_report_queue_size: 200
+  journal_queue_size: 10000
+  telemetry_queue_size: 1000
+  heartbeat_queue_size: 1000
+  heartbeat_timeout: 5.0
+
+impact:
+  enabled: false
+  source: api
+  symbol: ETH/EUR
+  interval_seconds: 15
+  timeout_seconds: 3
+  api_url: "http://127.0.0.1:8011/signal/trading?window=1h&mode=auto"
+  file_path: modules/impact_console/diagnostics/arrow_1h.json
+  fallback_to_file: true
+
+news:
+  edge_scale_bps: 30.0
+  block_long_entries: true
+  risk_off_threshold: 0.2
+  min_impact: 0.45
+
+control:
+  enabled: true
+  host: 127.0.0.1
+  port: 8000
+  stale_warn_sec: 12
+
+live:
+  api_key: ${KRAKEN_API_KEY}
+  api_secret: ${KRAKEN_API_SECRET}
+  rate_limit_per_sec: 1.0
+  rest_url: https://api.kraken.com
+  ws_auth_url: wss://ws-auth.kraken.com

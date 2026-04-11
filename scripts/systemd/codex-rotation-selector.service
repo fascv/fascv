@@ -1,0 +1,28 @@
+[Unit]
+Description=Codex Rotation Selector Guard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Schreibtisch/codex/bitcoin2
+Environment=INTERVAL_SEC=60
+Environment=SWITCH_MARGIN_SCORE=8
+Environment=MAX_RETAIN_POSITION_PCT=85
+Environment=ACTIVE_TOP=8
+Environment=WATCH_TOP=0
+Environment=MIN_ACTIVE_MINUTES=5
+Environment=APPLY_CHANGES=1
+Environment=ROTATION_PROFILE=scalp
+Environment=ROTATION_MACRO_SOFT_MODE=1
+Environment=SELECTOR_TIMEOUT_SEC=240
+EnvironmentFile=-%h/Schreibtisch/codex/bitcoin2/configs/rotation_selector_watch_pool.env
+ExecStart=/bin/bash -lc './scripts/rotation_selector_guard.sh'
+ExecStop=/bin/bash -lc 'pid=$(cat logs/rotation_selector_guard.pid 2>/dev/null || true); if [[ -n "$pid" ]]; then kill -TERM "$pid" 2>/dev/null || true; fi'
+Restart=always
+RestartSec=2
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,28 @@
+gate:
+  safety_margin_bps: 1.5
+  max_spread_bps: 24.0
+  max_atr_bps: 220.0
+risk:
+  max_exposure_eur: 75.0
+  vol_target_bps: 110.0
+  cooldown_bars: 3
+  allow_short: false
+  use_vol_scaling: false
+  use_gate_size_factor: true
+  entry_edge_bps: 12.0
+  exit_edge_bps: -2.0
+  min_hold_bars: 6
+  require_break_even_for_exit: false
+  min_exit_profit_bps: 10.0
+order:
+  type: limit
+  post_only: true
+  limit_offset_bps: 2.0
+  cycle_trade_eur: 75.0
+alpha:
+  type: breakout
+  breakout:
+    lookback: 24
+    trigger_bps: 40.0
+    scale: 5.0
+    max_edge_bps: 220.0

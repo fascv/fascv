@@ -1,0 +1,45 @@
+generated_at_utc: "2026-02-21T03:14:00Z"
+symbol: "XBT/EUR"
+timeframe: "30m"
+gate_profile:
+  holdout_min_return: 0.0
+  holdout_min_sharpe: 0.0
+  holdout_max_drawdown: 8.0
+  holdout_min_trades: 6.0
+  holdout_max_realized_cost_bps: 40.0
+  oos_min_return: 0.0
+  oos_min_trades: 4.0
+champions:
+  - id: "swing_common_multifamily"
+    family: "swing"
+    overlay_path: "configs/sim_optimized_professional_governed.yaml"
+    report_path: "reports/sim_opt_report_professional_governed.json"
+    governance_path: "reports/professional_governance_summary.json"
+    holdout:
+      return_pct: 1.152533800628186
+      sharpe: 0.28831146787253337
+      max_drawdown_pct: 3.487044322291878
+      trades: 22
+  - id: "vol_breakout_swing_family_sweep"
+    family: "vol_breakout_swing"
+    overlay_path: "configs/sim_optimized_professional_governed_06_vol_breakout_swing.yaml"
+    report_path: "reports/sim_opt_report_professional_governed_06_vol_breakout_swing.json"
+    governance_path: "reports/professional_governance_summary_06_vol_breakout_swing.json"
+    holdout:
+      return_pct: 0.2224107817217824
+      sharpe: 0.24958064004568578
+      max_drawdown_pct: 0.9438854320941522
+      trades: 15
+head_to_head_equal_controls:
+  report_path: "reports/champion_forward_compare_30m.json"
+  compared:
+    a_name: "swing_champion"
+    a_alpha_overlay: "configs/alpha_champion_swing_30m.yaml"
+    a_config: "configs/sim_auto_champion_swing_30m.yaml"
+    b_name: "breakout_swing_champion"
+    b_alpha_overlay: "configs/alpha_champion_breakout_swing_30m.yaml"
+    b_config: "configs/sim_auto_champion_breakout_swing_30m.yaml"
+  recommended: "swing_champion"
+  wins:
+    swing_champion: 2
+    breakout_swing_champion: 1

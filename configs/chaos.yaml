@@ -27,6 +27,10 @@ gate:
   session_start_utc: 0
   session_end_utc: 24
   stale_seconds: 5
+  block_on_high_news_impact: false
+  max_news_impact: 0.8
+  max_news_age_sec: 1800
+  news_safety_margin_bps: 0.0
 
 alpha:
   lookback: 3
@@ -55,7 +59,9 @@ execution:
 
 md:
   mock_data_path: data/sample_ohlcv.csv
-  replay_speed: 0.0
+  replay_speed: 300.0
+  loop: true
+  loop_sleep_sec: 0.2
   stale_seconds: 2
   stale_book_seconds: 2
   stale_trade_seconds: 2
@@ -84,6 +90,7 @@ journal:
 
 ipc:
   market_queue_size: 1
+  impact_queue_size: 1
   order_queue_size: 100
   exec_report_queue_size: 200
   journal_queue_size: 10000
@@ -93,6 +100,16 @@ ipc:
   restart_critical: true
   auto_resume: true
   pidfile: logs/chaos_pids.json
+
+impact:
+  enabled: false
+  source: api
+  symbol: XBT/EUR
+  interval_seconds: 15
+  timeout_seconds: 3
+  api_url: "http://127.0.0.1:8011/arrow?window=1h&mode=auto"
+  file_path: modules/impact_console/diagnostics/arrow_1h.json
+  fallback_to_file: true
 
 control:
   enabled: true

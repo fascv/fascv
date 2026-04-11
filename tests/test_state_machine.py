@@ -20,6 +20,12 @@ class TestOrderStateMachine(unittest.TestCase):
         now = datetime.now(timezone.utc)
         self.assertFalse(sm.transition("o2", "FILLED", now))
 
+    def test_recovery_transition_from_unknown_order(self):
+        sm = OrderStateMachine()
+        now = datetime.now(timezone.utc)
+        self.assertTrue(sm.transition("o3", "OPEN", now, allow_recovery=True))
+        self.assertTrue(sm.transition("o3", "PARTIAL", now))
+
 
 if __name__ == "__main__":
     unittest.main()

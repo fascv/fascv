@@ -1,0 +1,8 @@
+[Unit]
+Description=Codex Rotation Watch Pool Refresh
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/andi/Schreibtisch/codex/bitcoin2
+EnvironmentFile=-%h/Schreibtisch/codex/bitcoin2/configs/rotation_selector_watch_pool.env
+ExecStart=/bin/bash -lc 'python3 scripts/rotation_refresh_watch_pool.py --target-size "${WATCH_TOP:-28}"'

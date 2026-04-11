@@ -41,17 +41,12 @@ class TestCoreStale(unittest.TestCase):
         ctx.stop_event.set()
         t.join(timeout=1.0)
 
-        actions_core = []
-        while not ctx.q_control_core.empty():
-            cmd = ctx.q_control_core.get_nowait()
-            if isinstance(cmd, ControlCommand):
-                actions_core.append(cmd.action)
         actions_exec = []
         while not ctx.q_control_exec.empty():
             cmd = ctx.q_control_exec.get_nowait()
             if isinstance(cmd, ControlCommand):
                 actions_exec.append(cmd.action)
-        self.assertIn("CANCEL_ALL", actions_core)
+        self.assertIn("CANCEL_ALL", actions_exec)
         self.assertIn("STOP", actions_exec)
 
 

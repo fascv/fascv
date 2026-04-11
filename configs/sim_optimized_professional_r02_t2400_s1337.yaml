@@ -1,0 +1,32 @@
+gate:
+  safety_margin_bps: 1.0
+  max_spread_bps: 20.0
+  max_atr_bps: 80.0
+risk:
+  max_exposure_eur: 50.0
+  vol_target_bps: 90.0
+  cooldown_bars: 4
+  allow_short: false
+  use_vol_scaling: false
+  use_gate_size_factor: true
+  entry_edge_bps: 2.0
+  exit_edge_bps: -4.0
+  min_hold_bars: 6
+  require_break_even_for_exit: true
+  min_exit_profit_bps: 30.0
+order:
+  type: market
+  post_only: false
+  limit_offset_bps: 2.0
+  cycle_trade_eur: 50.0
+alpha:
+  type: swing
+  swing:
+    lookback: 14
+    buy_band: 0.35
+    sell_band: 0.65
+    momentum_lookback: 7
+    reversal_threshold_bps: 2.0
+    edge_scale: 1.0
+    min_range_bps: 35.0
+    max_edge_bps: 300.0

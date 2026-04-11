@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from multiprocessing import Event
 from multiprocessing.queues import Queue
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 
 @dataclass
@@ -20,3 +20,4 @@ class ProcessContext:
     q_control_exec: Queue
     q_telemetry: Queue
     q_heartbeat: Queue
+    q_impact_core: Optional[Queue] = None

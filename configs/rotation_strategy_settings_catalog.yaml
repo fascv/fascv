@@ -1,0 +1,242 @@
+version: 1
+updated_at: "2026-03-18T00:00:00+01:00"
+active_setting_version: ver.4
+purpose: >
+  Strategy settings catalog for the 4 live core strategies. This file is the
+  source of truth for current live strategy values, their lab artifacts, and
+  the next profitable tuning direction.
+entry_points:
+  read_first:
+    - start.txt
+    - docs/rotation_strategy_settings_catalog.md
+    - docs/rotation_live_trade_issue_backlog.md
+  live_override_env: configs/rotation_selector_watch_pool.env
+  meta_mirror_env: configs/rotation_meta_runtime.env
+  generated_runtime_configs: logs/rotation_runtime_configs/<symbol>_runtime.yaml
+  strategy_lab_reports: logs/rotation_strategy_labs/
+  live_trade_review: docs/rotation_live_trade_issue_backlog.md
+latest_live_trade_review:
+  path: docs/rotation_live_trade_issue_backlog.md
+  reviewed_window_cet: "2026-03-15 04:00-18:17 CET"
+  reviewed_trade_count: 28
+  grouped_findings:
+    execution_reconcile_error: 4
+    too_early_stop_exit: 3
+    fast_loser: 2
+    reconcile_only_exit: 3
+    normal_or_unclear: 16
+latest_strategy_lab_rerun:
+  report_index: logs/rotation_strategy_labs/index.json
+  rerun_window_hours: 48
+  rerun_generated_at_utc: "2026-03-17T10:24:49.730725+00:00"
+  rerun_notes:
+    - Technical execution artifacts were excluded from the learning window.
+    - Rebound lab matching was corrected to use the real swing micro-rebound runtime keys.
+    - Post-trade breakout rerun recommended a tighter `8.0` trigger, but live kept `7.0` and only applied the late-rebound volume guard to preserve tradeability.
+apply_flow:
+  - Edit the strategy setting in configs/rotation_selector_watch_pool.env.
+  - Mirror the same setting into configs/rotation_meta_runtime.env.
+  - Restart codex-rotation-selector.service.
+  - Verify configs/rotation_active_lanes.json and the generated runtime yaml.
+strategies:
+  rebound:
+    alpha_family: swing
+    status: live
+    setting_version: ver.4
+    latest_lab_report: logs/rotation_strategy_labs/rebound_ver.3.json
+    primary_setting:
+      key: swing_reversal_threshold_bps
+      env: ROTATION_SWING_REVERSAL_THRESHOLD_BPS
+      runtime_path: alpha.swing.reversal_threshold_bps
+      current_live_value: 0.0
+    source_paths:
+      selector: scripts/rotation_auto_coin_selector.py
+      trader: trading/alpha/swing.py
+      factory: trading/alpha/factory.py
+    diagnosis:
+      summary: >
+        The rebound lab now matches the real live swing micro-rebound knobs.
+        On the filtered 48h window, the accepted ver.3 change was a threshold-only
+        opening. After live no-trade review on 2026-03-17, ver.3 was refined again
+        to admit earlier low-context micro-rebounds: `min_range_bps=40.0`,
+        `micro_rebound_max_spread_bps=18.0`, `micro_rebound_min_context_rebound_bps=120.0`.
+        After the PLUME trade sold at 16:13:25 CET, rebound ver.3 was refined again
+        so already-extended micro-rebounds wait for a green confirmation candle
+        once `context_rebound_bps >= 180`.
+      latest_lab_candidate: rebound_0.0
+      latest_lab_version: ver.3
+      latest_lab_trade_count: 8
+      latest_lab_added_trade_count: 6
+      latest_lab_net_pnl_delta: 0.002993
+      latest_lab_apply_mode: threshold_only
+      latest_lab_primary_setting_value: 0.0
+      apply_when: >
+        ver.3 is live now as a modest tradeability opening. The momentum threshold
+        stays at `0.0`, and live refinement now allows earlier low-context
+        micro-rebounds without opening the high-context chase path.
+    live_review:
+      review_window_cet: "2026-03-15 04:00-18:17 CET plus 48h filtered lab rerun"
+      status: ver.3_live_applied_2026-03-17
+      summary: >
+        Rebound remained sparse, but after correcting the lab/runtime mismatch it
+        produced a clean profitable tradeability improvement. A later live
+        refinement on 2026-03-17 further opened low-context micro-rebounds while
+        leaving the high-context safeguards intact. A later PLUME-triggered
+        refinement added a green-candle confirmation once the reclaim is already
+        materially extended. This remains the active rebound ver.3.
+      trader_follow_up: >
+        Re-open rebound only if more live swing trades show that the 0.0 threshold
+        is still too tight or starts creating weak reentry churn.
+      next_lab_focus: >
+        If rebound is revisited, test only around the micro-rebound context and ret
+        guards, not by removing cost discipline.
+  staircase:
+    alpha_family: continuation
+    status: live
+    setting_version: ver.4
+    latest_lab_report: logs/rotation_strategy_labs/staircase.json
+    primary_setting:
+      key: cont_staircase_min_drawdown_from_peak_bps
+      env: ROTATION_CONT_STAIRCASE_MIN_DRAWDOWN_FROM_PEAK_BPS
+      runtime_path: alpha.continuation.staircase_min_drawdown_from_peak_bps
+      current_live_value: 0.0
+    selector_hooks:
+      - scripts/rotation_auto_coin_selector.py::_strong_staircase_selector_exception
+      - scripts/rotation_auto_coin_selector.py::_strong_staircase_floor_override
+    source_paths:
+      selector: scripts/rotation_auto_coin_selector.py
+      trader: trading/alpha/continuation.py
+    diagnosis:
+      summary: >
+        ver.4 opens staircase at the structural bottleneck instead of blindly
+        widening all continuation entries. Constructive stall phases can now use
+        the staircase override, the staircase trend and long-slope floors are
+        softened only in structurally healthy contexts, and the selector now
+        admits more true staircase structures. The filtered 48h lab still shows
+        weak historical coverage, but live selector verification now produces a
+        real staircase slot again.
+      latest_lab_candidate: staircase_0.0
+      latest_lab_version: ver.4
+      latest_lab_trade_count: 0
+      latest_lab_added_trade_count: 0
+      latest_lab_net_pnl_delta: 0.0
+      latest_lab_apply_mode: live_selector_confirmed
+      latest_lab_primary_setting_value: 0.0
+      apply_when: >
+        ver.4 is already live. Prefer further staircase changes only after fresh
+        live staircase fills show whether the new stall-path entries hold up.
+    live_review:
+      review_window_cet: "2026-03-17 19:04-20:09 CET plus 48h filtered lab rerun"
+      status: live_ver4_opened
+      summary: >
+        The old staircase bottleneck was mostly structural phase blocking. After
+        the ver.4 change, the live selector immediately restored a staircase slot
+        with `ZK` while `SOL` stayed on continuation.
+      trader_follow_up: >
+        Watch the first real staircase fills for hold quality and failed-start
+        behavior before widening any further.
+      next_lab_focus: >
+        Re-run the filtered staircase lab after fresh live staircase fills exist,
+        so the acceptance gate is no longer driven only by no-trade samples.
+  continuation:
+    alpha_family: continuation
+    status: live
+    setting_version: ver.4
+    latest_lab_report: logs/rotation_strategy_labs/continuation_ver.3.json
+    primary_setting:
+      key: cont_staircase_min_slope_medium_bps
+      env: ROTATION_CONT_STAIRCASE_MIN_SLOPE_MEDIUM_BPS
+      runtime_path: alpha.continuation.staircase_min_slope_medium_bps
+      current_live_value: 0.95
+    source_paths:
+      selector: scripts/rotation_auto_coin_selector.py
+      trader: trading/alpha/continuation.py
+    diagnosis:
+      summary: >
+        The fresh filtered 48h rerun did not produce a cleaner continuation ver.3.
+        The current live continuation package remains the best-ranked baseline, so
+        ver.3 carries continuation forward unchanged.
+      latest_lab_candidate: continuation_0.95
+      latest_lab_version: ver.3
+      latest_lab_trade_count: 7
+      latest_lab_added_trade_count: 1
+      latest_lab_net_pnl_delta: 0.0
+      latest_lab_apply_mode: carry_forward
+      latest_lab_primary_setting_value: 0.95
+      apply_when: >
+        ver.3 keeps continuation unchanged. The next continuation change should be
+        justified by cleaner exit-persistence evidence, not by forcing more entries.
+    live_review:
+      review_window_cet: "2026-03-15 04:00-18:17 CET plus 48h filtered lab rerun"
+      status: carry_forward_current_live_bundle
+      summary: >
+        Continuation is not the main current no-trade bottleneck. In the fresh rerun,
+        no continuation variant beat the live baseline cleanly.
+      trader_follow_up: >
+        Focus continuation follow-up on exit persistence and residual early-exit
+        traces rather than wider entry opening.
+      next_lab_focus: >
+        Re-open only when a newer clean continuation sample shows that a hold/trailing
+        adjustment is still needed.
+  breakout:
+    alpha_family: breakout
+    status: live
+    setting_version: ver.4
+    latest_lab_report: logs/rotation_strategy_labs/breakout_ver.3.json
+    primary_setting:
+      key: breakout_trigger_bps
+      env: ROTATION_BREAKOUT_TRIGGER_BPS
+      runtime_path: alpha.breakout.trigger_bps
+      current_live_value: 7.0
+    source_paths:
+      selector: scripts/rotation_auto_coin_selector.py
+      trader: trading/alpha/breakout.py
+      factory: trading/alpha/factory.py
+    diagnosis:
+      summary: >
+        Breakout remains the strongest ver.3 candidate. The filtered 48h rerun
+        accepted breakout_exit_relief_force with materially better estimated PnL,
+        one improved exit, and fewer early-exit bugs without lowering the core
+        breakout trigger. After the later SIGN/BANANAS31 trade review, live
+        breakout also gained a late-rebound blocker for already heavily reclaimed
+        moves that try to break out on weak volume.
+      latest_lab_candidate: breakout_exit_relief_force
+      latest_lab_version: ver.3
+      latest_lab_trade_count: 45
+      latest_lab_added_trade_count: 2
+      latest_lab_net_pnl_delta: 0.457287
+      latest_lab_apply_mode: exit_relief_force
+      latest_lab_primary_setting_value: 7.0
+      apply_when: >
+        ver.3 is live now as the stronger breakout exit-relief package. Keep the
+        trigger at 7.0 and manage breakout tradeability through the exit stack.
+    live_review:
+      review_window_cet: "2026-03-15 04:00-18:17 CET plus 48h filtered lab rerun"
+      status: ver.3_live_refined_2026-03-17
+      summary: >
+        Breakout still carries the clearest real pain and the clearest lab fix.
+        The accepted ver.3 package improves exit behavior without forcing broader
+        top-chase entry logic. A live post-trade refinement now blocks weak-volume
+        rebound breakouts already from mid-context (`context_range_pos >= 0.48`,
+        `context_rebound_bps >= 760`, `volume_z < 0.0`) and keeps the stricter
+        late-rebound block (`context_range_pos >= 0.72`,
+        `context_rebound_bps >= 1400`, `volume_z < 0.35`). After the ZK trade on
+        `2026-03-17 14:45:51 CET`, live also blocks reclaimed breakouts with
+        already expensive microstructure (`context_range_pos >= 0.60`,
+        `context_rebound_bps >= 400`, `spread_bps >= 18.0`). After the PUMP trade
+        sold at `2026-03-17 16:11:41 CET`, live also blocks low-context
+        countertrend breakouts when the mean drift is still clearly negative
+        (`context_range_pos <= 0.22`, `context_rebound_bps <= 140`,
+        `trend_return_bps <= -80`). The failed-start exit stack also keeps
+        bottom-reclaim breakouts alive a bit longer when the local breakout stays
+        intact. After the later ZK trade bought at `2026-03-17 14:59:05 CET`,
+        the time-break-even floor now also gives still-constructive breakout
+        reclaims a bounded extra window instead of forcing the exit immediately
+        below entry.
+      trader_follow_up: >
+        Watch for fewer INIT/BANANAS31/PUMP-style weak or countertrend rebound
+        breakouts while preserving bottom-liftoff and cleaner
+        continuation-style recoveries.
+      next_lab_focus: >
+        Re-open breakout only if fresh live trades show that the new exit-relief
+        package is still cutting winners too early.

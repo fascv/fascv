@@ -1,0 +1,17 @@
+{
+  "benchmark_profile": {
+    "dedupe_existing": 1500,
+    "dedupe_probes": 800,
+    "label_rows": 6000,
+    "label_batch_size": 500
+  },
+  "performance": {
+    "dedupe_probes_per_second": 65.3262418008175,
+    "labels_batch_rows_per_second": 82377.7649780304,
+    "labels_speedup_vs_single_row": 209.27946522249363
+  },
+  "hybrid_eval": {
+    "hybrid_corr_min": 0.15308006338826696,
+    "hybrid_directional_accuracy_min": 0.5329457364341085
+  }
+}

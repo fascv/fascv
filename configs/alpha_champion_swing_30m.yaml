@@ -1,0 +1,11 @@
+alpha:
+  type: swing
+  swing:
+    lookback: 18
+    buy_band: 0.35
+    sell_band: 0.7
+    momentum_lookback: 10
+    reversal_threshold_bps: 0.4
+    edge_scale: 0.5
+    min_range_bps: 70.0
+    max_edge_bps: 220.0
