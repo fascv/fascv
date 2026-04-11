@@ -440,6 +440,121 @@ class TestSelectRotationWatchlist(unittest.TestCase):
         self.assertFalse(info["refresh_ok"])
         self.assertIn("BAD", info["refresh_failed_symbols"])
 
+    def test_contract_prefilter_blocks_nondefault_risk_when_default_unknown(self) -> None:
+        scans = [
+            {
+                "network": "ETH",
+                "is_default": True,
+                "honeypot": {"status": "ok", "trade_risk": "unknown", "flags": []},
+                "goplus": {"status": "ok"},
+            },
+            {
+                "network": "BSC",
+                "is_default": False,
+                "honeypot": {
+                    "status": "ok",
+                    "trade_risk": "honeypot",
+                    "risk_level": 100,
+                    "is_honeypot": True,
+                    "flags": ["medium_fail_rate"],
+                },
+                "goplus": {"status": "ok"},
+            },
+        ]
+
+        decision = select_rotation_watchlist._decide_contract_prefilter(
+            scans,
+            block_nondefault_when_default_unknown=True,
+        )
+
+        self.assertTrue(decision["blocked"])
+        self.assertEqual(decision["reason"], "token_contract_risk_nondefault_default_unknown")
+
+    def test_contract_prefilter_does_not_block_nondefault_risk_when_default_low(self) -> None:
+        scans = [
+            {
+                "network": "ETH",
+                "is_default": True,
+                "honeypot": {"status": "ok", "trade_risk": "low", "risk_level": 1, "flags": []},
+                "goplus": {"status": "ok"},
+            },
+            {
+                "network": "BSC",
+                "is_default": False,
+                "honeypot": {
+                    "status": "ok",
+                    "trade_risk": "honeypot",
+                    "risk_level": 100,
+                    "is_honeypot": True,
+                    "flags": ["medium_fail_rate"],
+                },
+                "goplus": {"status": "ok"},
+            },
+        ]
+
+        decision = select_rotation_watchlist._decide_contract_prefilter(
+            scans,
+            block_nondefault_when_default_unknown=True,
+        )
+
+        self.assertFalse(decision["blocked"])
+
+    def test_contract_prefilter_warns_but_does_not_block_proxy_contract(self) -> None:
+        scans = [
+            {
+                "network": "ETH",
+                "is_default": True,
+                "honeypot": {"status": "ok", "trade_risk": "low", "risk_level": 1, "flags": []},
+                "goplus": {"status": "ok", "is_proxy": "1"},
+            },
+        ]
+
+        decision = select_rotation_watchlist._decide_contract_prefilter(
+            scans,
+            block_nondefault_when_default_unknown=True,
+        )
+
+        self.assertFalse(decision["blocked"])
+        self.assertIn("proxy_contract", decision["warnings"])
+
+    def test_token_prefilter_blocks_seed_tag_from_universe_policy_fallback(self) -> None:
+        with (
+            patch.dict(
+                select_rotation_watchlist.os.environ,
+                {"ROTATION_TOKEN_PREFILTER_BLOCK_TAGS": "Seed"},
+                clear=False,
+            ),
+            patch.object(
+                select_rotation_watchlist,
+                "_fetch_24h_ticker_map",
+                return_value={"TESTUSDC": {"quoteVolume": 1_000_000.0, "count": 100.0}},
+            ),
+            patch.object(select_rotation_watchlist, "_fetch_binance_product_map", return_value={}),
+            patch.object(
+                select_rotation_watchlist,
+                "_build_contract_risk_cache",
+                return_value=({}, {"enabled": True}),
+            ),
+        ):
+            entries, info = select_rotation_watchlist._build_token_prefilter(
+                quote_asset="USDC",
+                scan_symbols=["TEST"],
+                book_ticker_map={
+                    "TESTUSDC": {
+                        "bidPrice": 0.999,
+                        "askPrice": 1.001,
+                        "bidQty": 1_000.0,
+                        "askQty": 1_000.0,
+                    }
+                },
+                universe_policy_map={"TESTUSDC": {"monitoring_tags": ["Seed"]}},
+            )
+
+        self.assertEqual(info["blocked_count"], 1)
+        self.assertTrue(entries["TEST"]["blocked"])
+        self.assertEqual(entries["TEST"]["reason"], "token_prefilter_tag_seed")
+        self.assertEqual(entries["TEST"]["matched_block_tags"], ["seed"])
+
     def test_build_universe_policy_marks_unknown_when_refresh_fails(self) -> None:
         with (
             patch.dict(
@@ -515,6 +630,11 @@ class TestSelectRotationWatchlist(unittest.TestCase):
             patch.object(
                 select_rotation_watchlist,
                 "_build_auto_blacklist",
+                return_value=({}, {"enabled": True}),
+            ),
+            patch.object(
+                select_rotation_watchlist,
+                "_build_token_prefilter",
                 return_value=({}, {"enabled": True}),
             ),
             patch.object(select_rotation_watchlist, "_load_slope_profiles", return_value={}),
@@ -606,6 +726,11 @@ class TestSelectRotationWatchlist(unittest.TestCase):
                 "_build_auto_blacklist",
                 return_value=({}, {"enabled": True}),
             ),
+            patch.object(
+                select_rotation_watchlist,
+                "_build_token_prefilter",
+                return_value=({}, {"enabled": True}),
+            ),
             patch.object(select_rotation_watchlist, "_load_slope_profiles", return_value={}),
             patch.object(
                 select_rotation_watchlist,
@@ -670,6 +795,16 @@ class TestSelectRotationWatchlist(unittest.TestCase):
                 select_rotation_watchlist,
                 "_build_universe_policy",
                 return_value=({}, {}),
+            ),
+            patch.object(
+                select_rotation_watchlist,
+                "_build_auto_blacklist",
+                return_value=({}, {"enabled": True}),
+            ),
+            patch.object(
+                select_rotation_watchlist,
+                "_build_token_prefilter",
+                return_value=({}, {"enabled": True}),
             ),
             patch.object(select_rotation_watchlist, "_load_slope_profiles", return_value={}),
             patch.object(

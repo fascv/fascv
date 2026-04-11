@@ -52,6 +52,8 @@ ACTIVE_FILE = REPO_ROOT / "configs" / "rotation_active_lanes.json"
 UNIVERSE_POLICY_CACHE_FILE = REPO_ROOT / "logs" / "rotation_universe_policy_cache.json"
 AUTO_BLACKLIST_CACHE_FILE = REPO_ROOT / "logs" / "rotation_auto_blacklist_cache.json"
 AUTO_BLACKLIST_CACHE_SCHEMA_VERSION = 3
+TOKEN_PREFILTER_CACHE_FILE = REPO_ROOT / "logs" / "rotation_token_prefilter_cache.json"
+TOKEN_PREFILTER_CACHE_SCHEMA_VERSION = 1
 DEFAULT_QUOTE_ASSET = "USDC"
 LEVERAGED_SUFFIXES = ("UP", "DOWN", "BULL", "BEAR")
 KNOWN_QUOTES = ("USDC", "USDT", "FDUSD", "BUSD", "TUSD", "USDP", "DAI", "EUR", "USD", "BTC", "ETH")
@@ -59,6 +61,34 @@ EXCLUSION_ENV_VARS = ("ROTATION_EXCLUDED_BASE_SYMBOLS", "ROTATION_BLACKLIST_SYMB
 AUTO_BLACKLIST_DEFAULT_LEVEL = "mild"
 PERSISTENT_DOWNTREND_MIN_DAYS_DEFAULT = 21
 AUTO_BLACKLIST_LISTING_KLINE_LIMIT_DEFAULT = 3000
+TOKEN_PREFILTER_BAD_TRADE_RISKS = {"honeypot"}
+TOKEN_PREFILTER_HIGH_RISK_FLAGS = {
+    "all_snipers_honeypot",
+    "high_fail_rate",
+    "high_siphon_rate",
+}
+TOKEN_PREFILTER_MEDIUM_RISK_FLAGS = {
+    "medium_fail_rate",
+    "medium_siphon_rate",
+}
+TOKEN_PREFILTER_CHAIN_IDS = {
+    "BSC": 56,
+    "BEP20": 56,
+    "ETH": 1,
+    "ERC20": 1,
+    "BASE": 8453,
+    "ARB": 42161,
+    "ARBITRUM": 42161,
+    "ARBITRUMONE": 42161,
+    "OP": 10,
+    "OPTIMISM": 10,
+    "MATIC": 137,
+    "POLYGON": 137,
+    "AVAX": 43114,
+    "AVALANCHE": 43114,
+    "FTM": 250,
+    "FANTOM": 250,
+}
 DEFAULT_EXCLUDED_BASE_SYMBOLS: frozenset[str] = frozenset(
     {
         "EUR",
@@ -197,6 +227,28 @@ def _env_int(name: str, default: int, *, minimum: int = 0, maximum: int | None =
     if maximum is not None:
         value = min(int(maximum), value)
     return int(value)
+
+
+def _env_float(name: str, default: float, *, minimum: float = 0.0, maximum: float | None = None) -> float:
+    raw = os.environ.get(name, str(default))
+    try:
+        value = float(raw)
+    except Exception:
+        value = float(default)
+    value = max(float(minimum), value)
+    if maximum is not None:
+        value = min(float(maximum), value)
+    return float(value)
+
+
+def _env_csv_set(name: str, default: str = "") -> set[str]:
+    raw = os.environ.get(name, default)
+    out: set[str] = set()
+    for item in str(raw or "").split(","):
+        text = str(item or "").strip().lower()
+        if text:
+            out.add(text)
+    return out
 
 
 def _persistent_downdrift_min_days() -> int:
@@ -1207,6 +1259,540 @@ def _build_auto_blacklist(
     if not enabled or level == "off":
         return {}, info
     return entries_out, info
+
+
+def _network_chain_id(network: str) -> int | None:
+    normalized = str(network or "").strip().upper().replace(" ", "")
+    if not normalized:
+        return None
+    if normalized in TOKEN_PREFILTER_CHAIN_IDS:
+        return TOKEN_PREFILTER_CHAIN_IDS[normalized]
+    if "BSC" in normalized or "BEP20" in normalized:
+        return 56
+    if "ETH" in normalized or "ERC20" in normalized:
+        return 1
+    if "BASE" in normalized:
+        return 8453
+    if "ARBITRUM" in normalized:
+        return 42161
+    if "OPTIMISM" in normalized:
+        return 10
+    if "POLYGON" in normalized or "MATIC" in normalized:
+        return 137
+    if "AVAX" in normalized or "AVALANCHE" in normalized:
+        return 43114
+    if "FANTOM" in normalized:
+        return 250
+    return None
+
+
+def _public_url_json(url: str, params: dict[str, object] | None = None) -> object:
+    qs = urllib.parse.urlencode({k: str(v) for k, v in (params or {}).items()})
+    full_url = f"{url}?{qs}" if qs else url
+    req = urllib.request.Request(
+        full_url,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.load(resp)
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code} {url}: {body[:240].strip()}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"URL error {url}: {exc}") from exc
+
+
+def _fetch_24h_ticker_map() -> dict[str, dict[str, float]]:
+    payload = _public_json("/api/v3/ticker/24hr")
+    out: dict[str, dict[str, float]] = {}
+    if not isinstance(payload, list):
+        return out
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("symbol", "")).strip().upper()
+        if not symbol:
+            continue
+        try:
+            out[symbol] = {
+                "quoteVolume": float(item.get("quoteVolume") or 0.0),
+                "count": float(item.get("count") or 0.0),
+            }
+        except Exception:
+            continue
+    return out
+
+
+def _fetch_binance_capital_asset_map() -> dict[str, dict[str, object]]:
+    payload = _signed_get("/sapi/v1/capital/config/getall")
+    if not isinstance(payload, list):
+        return {}
+    out: dict[str, dict[str, object]] = {}
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        coin = str(item.get("coin", "")).strip().upper()
+        if coin:
+            out[coin] = item
+    return out
+
+
+def _honeypot_scan(contract: str, chain_id: int) -> dict[str, object]:
+    payload = _public_url_json(
+        "https://api.honeypot.is/v2/IsHoneypot",
+        {"address": contract, "chainID": chain_id},
+    )
+    if not isinstance(payload, dict):
+        return {"status": "invalid_payload"}
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    honeypot = (
+        payload.get("honeypotResult")
+        if isinstance(payload.get("honeypotResult"), dict)
+        else {}
+    )
+    flags_raw = payload.get("flags")
+    flags = [str(item) for item in flags_raw] if isinstance(flags_raw, list) else []
+    return {
+        "status": "ok",
+        "trade_risk": str(summary.get("risk") or "").strip().lower(),
+        "risk_level": summary.get("riskLevel"),
+        "is_honeypot": honeypot.get("isHoneypot"),
+        "flags": flags,
+    }
+
+
+def _goplus_scan(contract: str, chain_id: int) -> dict[str, object]:
+    payload = _public_url_json(
+        f"https://api.gopluslabs.io/api/v1/token_security/{int(chain_id)}",
+        {"contract_addresses": contract},
+    )
+    if not isinstance(payload, dict):
+        return {"status": "invalid_payload"}
+    result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+    item = result.get(str(contract).lower()) if isinstance(result, dict) else None
+    if not isinstance(item, dict):
+        return {"status": "missing_result"}
+    return {
+        "status": "ok",
+        "is_open_source": item.get("is_open_source"),
+        "is_proxy": item.get("is_proxy"),
+        "is_mintable": item.get("is_mintable"),
+        "buy_tax": item.get("buy_tax"),
+        "sell_tax": item.get("sell_tax"),
+        "is_blacklisted": item.get("is_blacklisted"),
+        "is_whitelisted": item.get("is_whitelisted"),
+        "transfer_pausable": item.get("transfer_pausable"),
+        "slippage_modifiable": item.get("slippage_modifiable"),
+        "cannot_sell_all": item.get("cannot_sell_all"),
+    }
+
+
+def _contract_scan_is_high_risk(scan: dict[str, object]) -> bool:
+    hp = scan.get("honeypot") if isinstance(scan.get("honeypot"), dict) else {}
+    gp = scan.get("goplus") if isinstance(scan.get("goplus"), dict) else {}
+    risk = str(hp.get("trade_risk") or "").strip().lower()
+    flags = {str(item).strip().lower() for item in (hp.get("flags") or [])}
+    try:
+        risk_level = int(float(hp.get("risk_level") or 0))
+    except Exception:
+        risk_level = 0
+    if risk in TOKEN_PREFILTER_BAD_TRADE_RISKS:
+        return True
+    if bool(hp.get("is_honeypot")):
+        return True
+    if risk_level >= 80:
+        return True
+    if flags & TOKEN_PREFILTER_HIGH_RISK_FLAGS:
+        return True
+    if str(gp.get("is_mintable") or "").strip() == "1":
+        return True
+    if str(gp.get("transfer_pausable") or "").strip() == "1":
+        return True
+    if str(gp.get("slippage_modifiable") or "").strip() == "1":
+        return True
+    return False
+
+
+def _contract_scan_is_unknown(scan: dict[str, object]) -> bool:
+    hp = scan.get("honeypot") if isinstance(scan.get("honeypot"), dict) else {}
+    risk = str(hp.get("trade_risk") or "").strip().lower()
+    status = str(hp.get("status") or "").strip().lower()
+    return status != "ok" or risk in {"", "unknown"}
+
+
+def _contract_scan_warning_flags(scan: dict[str, object]) -> list[str]:
+    hp = scan.get("honeypot") if isinstance(scan.get("honeypot"), dict) else {}
+    gp = scan.get("goplus") if isinstance(scan.get("goplus"), dict) else {}
+    flags: list[str] = []
+    for item in hp.get("flags") or []:
+        text = str(item).strip().lower()
+        if text in TOKEN_PREFILTER_MEDIUM_RISK_FLAGS:
+            flags.append(text)
+    if str(gp.get("is_proxy") or "").strip() == "1":
+        flags.append("proxy_contract")
+    return sorted(set(flags))
+
+
+def _decide_contract_prefilter(
+    scans: list[dict[str, object]],
+    *,
+    block_nondefault_when_default_unknown: bool,
+) -> dict[str, object]:
+    default_scan = next((scan for scan in scans if bool(scan.get("is_default"))), None)
+    if default_scan is None:
+        default_scan = scans[0] if scans else None
+    high_risk_scans = [scan for scan in scans if _contract_scan_is_high_risk(scan)]
+    warnings = sorted(
+        {
+            flag
+            for scan in scans
+            for flag in _contract_scan_warning_flags(scan)
+        }
+    )
+    if default_scan is not None and _contract_scan_is_high_risk(default_scan):
+        return {
+            "blocked": True,
+            "reason": "token_contract_risk_default",
+            "warnings": warnings,
+        }
+    if (
+        block_nondefault_when_default_unknown
+        and default_scan is not None
+        and _contract_scan_is_unknown(default_scan)
+        and high_risk_scans
+    ):
+        return {
+            "blocked": True,
+            "reason": "token_contract_risk_nondefault_default_unknown",
+            "warnings": warnings,
+        }
+    return {
+        "blocked": False,
+        "reason": "",
+        "warnings": warnings,
+    }
+
+
+def _scan_token_contracts(symbol: str, asset_info: dict[str, object]) -> dict[str, object]:
+    networks = asset_info.get("networkList")
+    if not isinstance(networks, list):
+        networks = []
+    candidates: list[dict[str, object]] = []
+    for item in networks:
+        if not isinstance(item, dict):
+            continue
+        network = str(item.get("network") or "").strip().upper()
+        contract = str(item.get("contractAddress") or "").strip()
+        chain_id = _network_chain_id(network)
+        if not network or not contract or chain_id is None:
+            continue
+        candidates.append(
+            {
+                "network": network,
+                "chain_id": int(chain_id),
+                "contract": contract,
+                "is_default": bool(item.get("isDefault")),
+            }
+        )
+
+    default_candidate = next((item for item in candidates if bool(item.get("is_default"))), None)
+    if default_candidate is None and candidates:
+        default_candidate = candidates[0]
+
+    def _run_scan(item: dict[str, object]) -> dict[str, object]:
+        contract = str(item.get("contract") or "")
+        chain_id = int(item.get("chain_id") or 0)
+        scan: dict[str, object] = {
+            "network": str(item.get("network") or ""),
+            "chain_id": int(chain_id),
+            "contract": contract,
+            "is_default": bool(item.get("is_default")),
+            "honeypot": {"status": "not_run"},
+            "goplus": {"status": "not_run"},
+        }
+        try:
+            scan["honeypot"] = _honeypot_scan(contract, int(chain_id))
+        except Exception as exc:
+            scan["honeypot"] = {"status": "error", "error": str(exc).strip()}
+        try:
+            scan["goplus"] = _goplus_scan(contract, int(chain_id))
+        except Exception as exc:
+            scan["goplus"] = {"status": "error", "error": str(exc).strip()}
+        return scan
+
+    scans: list[dict[str, object]] = []
+    if default_candidate is not None:
+        default_scan = _run_scan(default_candidate)
+        scans.append(default_scan)
+        if (
+            _contract_scan_is_unknown(default_scan)
+            and _env_flag("ROTATION_TOKEN_PREFILTER_BLOCK_NONDEFAULT_WHEN_DEFAULT_UNKNOWN", "1")
+        ):
+            for item in candidates:
+                if item is default_candidate:
+                    continue
+                scan = _run_scan(item)
+                scans.append(scan)
+                if _contract_scan_is_high_risk(scan):
+                    break
+    decision = _decide_contract_prefilter(
+        scans,
+        block_nondefault_when_default_unknown=_env_flag(
+            "ROTATION_TOKEN_PREFILTER_BLOCK_NONDEFAULT_WHEN_DEFAULT_UNKNOWN",
+            "1",
+        ),
+    )
+    return {
+        "symbol": symbol,
+        "blocked": bool(decision.get("blocked", False)),
+        "reason": str(decision.get("reason") or ""),
+        "warnings": decision.get("warnings") if isinstance(decision.get("warnings"), list) else [],
+        "scans": scans,
+    }
+
+
+def _build_contract_risk_cache(
+    *,
+    scan_symbols: list[str],
+) -> tuple[dict[str, dict[str, object]], dict[str, object]]:
+    enabled = _env_flag("ROTATION_TOKEN_PREFILTER_CONTRACT_ENABLED", "1")
+    if not enabled:
+        return {}, {"enabled": False}
+    max_age_sec = int(_env_hours("ROTATION_TOKEN_PREFILTER_RECHECK_HOURS", 24.0) * 3600.0)
+    force_refresh = _env_flag("ROTATION_TOKEN_PREFILTER_FORCE_REFRESH", "0")
+    now_ts = int(time.time())
+    scan_symbols_norm = [_normalize_symbol_token(symbol) for symbol in scan_symbols]
+    scan_symbols_norm = [symbol for symbol in scan_symbols_norm if symbol]
+    scan_set = set(scan_symbols_norm)
+
+    cache = _load_universe_policy_cache(TOKEN_PREFILTER_CACHE_FILE)
+    cache_schema = int(cache.get("schema_version") or 0)
+    cache_generated_ts = int(cache.get("generated_at_ts") or 0)
+    cache_scanned_raw = cache.get("scanned_symbols")
+    if not isinstance(cache_scanned_raw, list):
+        cache_scanned_raw = []
+    cache_scanned = {
+        _normalize_symbol_token(str(item or ""))
+        for item in cache_scanned_raw
+        if _normalize_symbol_token(str(item or ""))
+    }
+    entries_raw = cache.get("entries")
+    if not isinstance(entries_raw, dict):
+        entries_raw = {}
+
+    need_refresh = bool(force_refresh)
+    refresh_reason = "force_refresh" if force_refresh else ""
+    if not need_refresh:
+        if cache_schema != TOKEN_PREFILTER_CACHE_SCHEMA_VERSION:
+            need_refresh = True
+            refresh_reason = "cache_schema_changed"
+        elif now_ts - cache_generated_ts > max_age_sec:
+            need_refresh = True
+            refresh_reason = "stale_cache"
+        elif cache_scanned != scan_set:
+            need_refresh = True
+            refresh_reason = "scan_symbol_set_changed"
+        elif not entries_raw:
+            need_refresh = True
+            refresh_reason = "missing_cache"
+
+    if not need_refresh:
+        entries: dict[str, dict[str, object]] = {}
+        for symbol, entry in entries_raw.items():
+            if isinstance(entry, dict):
+                entries[_normalize_symbol_token(str(symbol))] = dict(entry)
+        return entries, {
+            "enabled": True,
+            "refreshed": False,
+            "refresh_needed": False,
+            "refresh_reason": "",
+            "cache_file": str(TOKEN_PREFILTER_CACHE_FILE),
+            "entry_count": len(entries),
+        }
+
+    entries_out: dict[str, dict[str, object]] = {}
+    refresh_ok = True
+    refresh_errors: list[dict[str, str]] = []
+    try:
+        asset_map = _fetch_binance_capital_asset_map()
+    except Exception as exc:
+        asset_map = {}
+        refresh_ok = False
+        refresh_errors.append({"symbol": "*", "error": str(exc).strip()})
+
+    for symbol in scan_symbols_norm:
+        asset_info = asset_map.get(symbol)
+        if not isinstance(asset_info, dict):
+            continue
+        try:
+            entries_out[symbol] = _scan_token_contracts(symbol, asset_info)
+        except Exception as exc:
+            refresh_ok = False
+            refresh_errors.append({"symbol": symbol, "error": str(exc).strip()})
+
+    payload: dict[str, object] = {
+        "schema_version": TOKEN_PREFILTER_CACHE_SCHEMA_VERSION,
+        "generated_at_ts": now_ts,
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now_ts)),
+        "scanned_symbols": scan_symbols_norm,
+        "entry_count": len(entries_out),
+        "entries": entries_out,
+        "refresh_ok": refresh_ok,
+        "refresh_errors": refresh_errors[:96],
+    }
+    _save_universe_policy_cache(TOKEN_PREFILTER_CACHE_FILE, payload)
+    return entries_out, {
+        "enabled": True,
+        "refreshed": True,
+        "refresh_needed": True,
+        "refresh_reason": refresh_reason,
+        "refresh_ok": refresh_ok,
+        "refresh_errors_total": len(refresh_errors),
+        "refresh_errors_sample": refresh_errors[:24],
+        "cache_file": str(TOKEN_PREFILTER_CACHE_FILE),
+        "entry_count": len(entries_out),
+    }
+
+
+def _build_token_prefilter(
+    *,
+    quote_asset: str,
+    scan_symbols: list[str],
+    book_ticker_map: dict[str, dict[str, float]],
+    universe_policy_map: dict[str, dict[str, object]] | None = None,
+) -> tuple[dict[str, dict[str, object]], dict[str, object]]:
+    enabled = _env_flag("ROTATION_TOKEN_PREFILTER_ENABLED", "1")
+    quote_asset_norm = str(quote_asset or DEFAULT_QUOTE_ASSET).strip().upper() or DEFAULT_QUOTE_ASSET
+    scan_symbols_norm = _dedupe_symbols(scan_symbols, quote_asset=quote_asset_norm)
+    min_24h_quote_volume = _env_float(
+        "ROTATION_TOKEN_PREFILTER_MIN_24H_QUOTE_VOLUME",
+        0.0,
+        minimum=0.0,
+    )
+    max_spread_bps = _env_float(
+        "ROTATION_TOKEN_PREFILTER_MAX_SPREAD_BPS",
+        35.0,
+        minimum=0.0,
+    )
+    min_top_depth_notional = _env_float(
+        "ROTATION_TOKEN_PREFILTER_MIN_TOP_DEPTH_NOTIONAL",
+        80.0,
+        minimum=0.0,
+    )
+    blocked_tags = _env_csv_set("ROTATION_TOKEN_PREFILTER_BLOCK_TAGS", "Seed")
+    contract_hard_block = _env_flag("ROTATION_TOKEN_PREFILTER_CONTRACT_HARD_BLOCK", "0")
+    if not enabled:
+        return {}, {
+            "enabled": False,
+            "min_24h_quote_volume": min_24h_quote_volume,
+            "max_spread_bps": max_spread_bps,
+            "min_top_depth_notional": min_top_depth_notional,
+            "blocked_tags": sorted(blocked_tags),
+            "contract_hard_block": contract_hard_block,
+        }
+
+    ticker_map: dict[str, dict[str, float]] = {}
+    ticker_error = ""
+    try:
+        ticker_map = _fetch_24h_ticker_map()
+    except Exception as exc:
+        ticker_error = str(exc).strip()
+
+    product_map: dict[str, dict[str, object]] = {}
+    product_error = ""
+    if blocked_tags:
+        try:
+            product_map = _fetch_binance_product_map()
+        except Exception as exc:
+            product_error = str(exc).strip()
+
+    contract_map, contract_info = _build_contract_risk_cache(scan_symbols=scan_symbols_norm)
+    entries: dict[str, dict[str, object]] = {}
+    for symbol in scan_symbols_norm:
+        market = f"{symbol}{quote_asset_norm}"
+        reasons: list[str] = []
+        ticker = ticker_map.get(market, {})
+        quote_volume_24h = float(ticker.get("quoteVolume", 0.0) or 0.0)
+        book = book_ticker_map.get(market, {})
+        bid = float(book.get("bidPrice", 0.0) or 0.0)
+        ask = float(book.get("askPrice", 0.0) or 0.0)
+        bid_qty = float(book.get("bidQty", 0.0) or 0.0)
+        ask_qty = float(book.get("askQty", 0.0) or 0.0)
+        mid = (bid + ask) / 2.0 if bid > 0.0 and ask > 0.0 else 0.0
+        spread_bps = ((ask - bid) / mid) * 10000.0 if mid > 0.0 else 0.0
+        top_depth_notional = (bid * bid_qty) + (ask * ask_qty)
+        if ticker_map and quote_volume_24h < min_24h_quote_volume:
+            reasons.append("token_prefilter_low_24h_volume")
+        if mid > 0.0 and spread_bps > max_spread_bps:
+            reasons.append("token_prefilter_wide_spread")
+        if top_depth_notional > 0.0 and top_depth_notional < min_top_depth_notional:
+            reasons.append("token_prefilter_thin_top_depth")
+
+        product_info = product_map.get(market, {})
+        tags_raw = product_info.get("tags") if isinstance(product_info, dict) else []
+        product_tags = [str(item).strip() for item in tags_raw] if isinstance(tags_raw, list) else []
+        if not product_tags and isinstance(universe_policy_map, dict):
+            policy_info = universe_policy_map.get(market, {})
+            policy_tags = policy_info.get("monitoring_tags") if isinstance(policy_info, dict) else []
+            product_tags = (
+                [str(item).strip() for item in policy_tags]
+                if isinstance(policy_tags, list)
+                else []
+            )
+        matched_block_tags = sorted(
+            {
+                str(tag).strip().lower()
+                for tag in product_tags
+                if str(tag).strip().lower() in blocked_tags
+            }
+        )
+        if matched_block_tags:
+            reasons.append(f"token_prefilter_tag_{matched_block_tags[0]}")
+
+        contract_entry = contract_map.get(symbol, {})
+        if (
+            contract_hard_block
+            and isinstance(contract_entry, dict)
+            and bool(contract_entry.get("blocked", False))
+        ):
+            reasons.append(str(contract_entry.get("reason") or "token_contract_risk"))
+
+        entries[symbol] = {
+            "symbol": symbol,
+            "market": market,
+            "blocked": bool(reasons),
+            "reason": reasons[0] if reasons else "",
+            "reasons": reasons,
+            "quote_volume_24h": quote_volume_24h,
+            "spread_bps": spread_bps,
+            "top_depth_notional": top_depth_notional,
+            "product_tags": product_tags,
+            "matched_block_tags": matched_block_tags,
+            "contract": contract_entry if isinstance(contract_entry, dict) else {},
+        }
+
+    blocked_symbols = sorted(symbol for symbol, entry in entries.items() if bool(entry.get("blocked")))
+    return entries, {
+        "enabled": True,
+        "min_24h_quote_volume": min_24h_quote_volume,
+        "max_spread_bps": max_spread_bps,
+        "min_top_depth_notional": min_top_depth_notional,
+        "blocked_tags": sorted(blocked_tags),
+        "contract_hard_block": contract_hard_block,
+        "ticker_ok": not bool(ticker_error),
+        "ticker_error": ticker_error,
+        "product_ok": not bool(product_error),
+        "product_error": product_error,
+        "contract": contract_info,
+        "scan_symbol_count": len(scan_symbols_norm),
+        "entry_count": len(entries),
+        "blocked_count": len(blocked_symbols),
+        "blocked_symbols": blocked_symbols[:96],
+    }
 
 
 def _fetch_binance_product_map() -> dict[str, dict[str, object]]:
@@ -2990,6 +3576,12 @@ def main() -> None:
     except Exception:
         min_quote_volume_60m = 1500.0
     volume_gate_require_both = _env_flag("ROTATION_VOLUME_GATE_REQUIRE_BOTH", "0")
+    token_prefilter_min_listing_age_days = _env_float(
+        "ROTATION_TOKEN_PREFILTER_MIN_LISTING_AGE_DAYS",
+        30.0,
+        minimum=0.0,
+        maximum=365.0,
+    )
     try:
         slope_profile_alignment_entry_min = float(
             os.environ.get("ROTATION_SLOPE_PROFILE_ALIGNMENT_MIN", "0.06")
@@ -3073,6 +3665,12 @@ def main() -> None:
     except Exception as exc:
         book_ticker_source = "per_symbol"
         book_ticker_bulk_error = str(exc).strip() or repr(exc)
+    token_prefilter_map, token_prefilter_info = _build_token_prefilter(
+        quote_asset=quote_asset,
+        scan_symbols=[str(symbol) for symbol in candidates],
+        book_ticker_map=book_ticker_map,
+        universe_policy_map=universe_policy_map,
+    )
     for symbol in candidates:
         market = f"{symbol}{quote_asset}"
         balance_qty = max(0.0, float(balances.get(symbol, 0.0) or 0.0))
@@ -3100,6 +3698,19 @@ def main() -> None:
         auto_blacklist_reason = str(auto_blacklist_entry.get("reason", "") or "").strip()
         if auto_blacklisted and not auto_blacklist_reason:
             auto_blacklist_reason = "auto_blacklist"
+        token_prefilter_entry = token_prefilter_map.get(symbol, {})
+        if not isinstance(token_prefilter_entry, dict):
+            token_prefilter_entry = {}
+        token_prefilter_blocked = bool(token_prefilter_entry.get("blocked", False))
+        token_prefilter_reason = str(token_prefilter_entry.get("reason", "") or "").strip()
+        token_prefilter_reasons_raw = token_prefilter_entry.get("reasons")
+        token_prefilter_reasons = (
+            [str(item) for item in token_prefilter_reasons_raw]
+            if isinstance(token_prefilter_reasons_raw, list)
+            else []
+        )
+        if token_prefilter_blocked and not token_prefilter_reason:
+            token_prefilter_reason = "token_prefilter"
         policy = universe_policy_map.get(market, {})
         monitoring_tags = policy.get("monitoring_tags")
         if not isinstance(monitoring_tags, list):
@@ -3123,6 +3734,9 @@ def main() -> None:
             if auto_blacklisted:
                 hard_excluded = True
                 hard_reason = auto_blacklist_reason
+            elif token_prefilter_blocked:
+                hard_excluded = True
+                hard_reason = token_prefilter_reason
             elif is_monitoring:
                 hard_excluded = True
                 hard_reason = "monitoring_tag"
@@ -3153,6 +3767,11 @@ def main() -> None:
                     "hard_exclusion_reason": hard_reason,
                     "auto_blacklisted": auto_blacklisted,
                     "auto_blacklist_reason": auto_blacklist_reason,
+                    "token_prefilter_blocked": token_prefilter_blocked,
+                    "token_prefilter_reason": token_prefilter_reason,
+                    "token_prefilter_reasons": token_prefilter_reasons,
+                    "token_prefilter": token_prefilter_entry,
+                    "token_prefilter_listing_history_days": 0.0,
                     "is_monitoring": is_monitoring,
                     "monitoring_tags": monitoring_tags,
                     "is_problem_case": is_problem,
@@ -3187,6 +3806,7 @@ def main() -> None:
                 target_bars=MACRO_KLINE_LIMIT,
             )
             macro_closes = [float(k[4]) for k in macro_klines]
+            token_prefilter_listing_history_days = max(0.0, float(len(macro_closes) - 1))
             persistent_downdrift = _persistent_downdrift_metrics(
                 macro_closes,
                 btc_macro_closes,
@@ -3754,6 +4374,15 @@ def main() -> None:
                 basic_eligible = False
                 gate_reason = f"persistent_downdrift_{persistent_downdrift_level}"
                 persistent_downdrift_blocked_count += 1
+            elif (
+                token_prefilter_min_listing_age_days > 0.0
+                and not has_open
+                and symbol not in selected_grace
+                and token_prefilter_listing_history_days > 0.0
+                and token_prefilter_listing_history_days < token_prefilter_min_listing_age_days
+            ):
+                basic_eligible = False
+                gate_reason = "token_prefilter_young_listing"
             elif non_falling_longtrend_blocked:
                 basic_eligible = False
                 if non_falling_longtrend_reason:
@@ -4320,6 +4949,11 @@ def main() -> None:
                     "hard_exclusion_reason": "",
                     "auto_blacklisted": auto_blacklisted,
                     "auto_blacklist_reason": auto_blacklist_reason,
+                    "token_prefilter_blocked": token_prefilter_blocked,
+                    "token_prefilter_reason": token_prefilter_reason,
+                    "token_prefilter_reasons": token_prefilter_reasons,
+                    "token_prefilter": token_prefilter_entry,
+                    "token_prefilter_listing_history_days": token_prefilter_listing_history_days,
                     "is_monitoring": is_monitoring,
                     "monitoring_tags": monitoring_tags,
                     "is_problem_case": is_problem,
@@ -4329,7 +4963,13 @@ def main() -> None:
                     "policy_data_unknown": policy_data_unknown,
                     "excluded_with_selected_grace": bool(
                         (symbol in selected_grace)
-                        and (auto_blacklisted or is_monitoring or is_problem or policy_data_unknown)
+                        and (
+                            auto_blacklisted
+                            or token_prefilter_blocked
+                            or is_monitoring
+                            or is_problem
+                            or policy_data_unknown
+                        )
                     ),
                     "spread_bps": spread_bps,
                     "top_depth_notional": top_depth_notional,
@@ -4670,6 +5310,8 @@ def main() -> None:
         "universe_policy_cache_file": str(UNIVERSE_POLICY_CACHE_FILE),
         "auto_blacklist": auto_blacklist_info,
         "auto_blacklist_cache_file": str(AUTO_BLACKLIST_CACHE_FILE),
+        "token_prefilter": token_prefilter_info,
+        "token_prefilter_cache_file": str(TOKEN_PREFILTER_CACHE_FILE),
         "include_balances": include_balances,
         "allow_snapshot_fallback": allow_snapshot_fallback,
         "max_spread_bps": max_spread_bps,
@@ -4736,6 +5378,7 @@ def main() -> None:
         "min_quote_volume_5m": min_quote_volume_5m,
         "min_quote_volume_60m": min_quote_volume_60m,
         "volume_gate_require_both": volume_gate_require_both,
+        "token_prefilter_min_listing_age_days": token_prefilter_min_listing_age_days,
         "slope_profile_path": str(sweetspot_path),
         "slope_profiles_loaded": len(slope_profiles),
         "selected": selected,
