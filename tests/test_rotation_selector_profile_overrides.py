@@ -7,7 +7,7 @@ import os
 import tempfile
 import textwrap
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -1867,6 +1867,126 @@ class TestRotationSelectorProfileOverrides(unittest.TestCase):
         self.assertEqual(strategy_sequence, ["continuation"])
         self.assertEqual(rows[0]["selection_path"], "strategy_plan")
         self.assertEqual(rows[1]["selection_path"], "")
+
+    def test_coin_experience_priors_decay_old_trade_outcomes(self) -> None:
+        now = datetime(2026, 4, 11, 8, 0, tzinfo=timezone.utc)
+        settings = {
+            "lookback_days": 21.0,
+            "half_life_days": 5.0,
+            "min_trades": 2,
+            "min_weighted_trades": 1.2,
+            "full_weight_trades": 5.0,
+            "max_abs_score": 36.0,
+            "min_abs_score": 0.0,
+        }
+        trade_rows = [
+            {
+                "symbol": "XLMUSDC",
+                "sellTime": (now - timedelta(days=1)).isoformat(),
+                "buyGrossUsdc": 10.0,
+                "proceedsUsdc": 0.12,
+                "closed": True,
+            },
+            {
+                "symbol": "XLMUSDC",
+                "sellTime": (now - timedelta(days=2)).isoformat(),
+                "buyGrossUsdc": 10.0,
+                "proceedsUsdc": 0.10,
+                "closed": True,
+            },
+            {
+                "symbol": "XLMUSDC",
+                "sellTime": (now - timedelta(days=20)).isoformat(),
+                "buyGrossUsdc": 10.0,
+                "proceedsUsdc": -1.00,
+                "closed": True,
+            },
+            {
+                "symbol": "PLUMEUSDC",
+                "sellTime": (now - timedelta(hours=8)).isoformat(),
+                "buyGrossUsdc": 10.0,
+                "proceedsUsdc": -0.10,
+                "closed": True,
+            },
+            {
+                "symbol": "PLUMEUSDC",
+                "sellTime": (now - timedelta(days=1)).isoformat(),
+                "buyGrossUsdc": 10.0,
+                "proceedsUsdc": -0.08,
+                "closed": True,
+            },
+            {
+                "symbol": "CVXUSDC",
+                "sellTime": (now - timedelta(hours=2)).isoformat(),
+                "buyGrossUsdc": 10.0,
+                "proceedsUsdc": 0.20,
+                "closed": True,
+            },
+        ]
+
+        priors, info = rotation_auto_coin_selector._build_coin_experience_priors_from_rows(
+            trade_rows,
+            now=now,
+            settings=settings,
+        )
+
+        self.assertGreater(priors["XLM"]["score"], 0.0)
+        self.assertLessEqual(priors["XLM"]["score"], settings["max_abs_score"])
+        self.assertLess(priors["PLUME"]["score"], 0.0)
+        self.assertFalse(priors["CVX"]["sample_ok"])
+        self.assertEqual(priors["CVX"]["score"], 0.0)
+        self.assertEqual(info["trade_rows_seen"], len(trade_rows))
+
+    def test_coin_experience_prior_does_not_create_strategy_candidate(self) -> None:
+        rows = [
+            {
+                "symbol": "XLM",
+                "score": -20.0,
+                "strategy_scores": {},
+                "strategy_tags": [],
+                "strategy_primary": "",
+                "strategy_meta_score": 0.0,
+            }
+        ]
+
+        rotation_auto_coin_selector._apply_coin_experience_priors(
+            rows,
+            {"XLM": {"score": 30.0, "sample_ok": True, "raw_trade_count": 3}},
+            enabled=True,
+        )
+
+        self.assertEqual(rows[0]["score"], -20.0)
+        self.assertEqual(rows[0]["strategy_scores"], {})
+        self.assertEqual(rows[0]["strategy_tags"], [])
+        self.assertEqual(rows[0]["strategy_primary"], "")
+        self.assertEqual(rows[0]["strategy_meta_score"], 0.0)
+        self.assertEqual(rows[0]["coin_experience_score"], 30.0)
+
+    def test_coin_experience_prior_can_remove_weak_strategy_candidate(self) -> None:
+        rows = [
+            {
+                "symbol": "PLUME",
+                "score": 100.0,
+                "strategy_scores": {"rebound": 20.0},
+                "strategy_tags": ["rebound"],
+                "strategy_primary": "rebound",
+                "strategy_primary_score": 20.0,
+                "strategy_meta_score": 20.0,
+            }
+        ]
+
+        rotation_auto_coin_selector._apply_coin_experience_priors(
+            rows,
+            {"PLUME": {"score": -36.0, "sample_ok": True, "raw_trade_count": 3}},
+            enabled=True,
+        )
+
+        self.assertEqual(rows[0]["score"], 64.0)
+        self.assertEqual(rows[0]["strategy_scores"], {})
+        self.assertEqual(rows[0]["strategy_tags"], [])
+        self.assertEqual(rows[0]["strategy_primary"], "")
+        self.assertEqual(rows[0]["strategy_primary_score"], 0.0)
+        self.assertLessEqual(rows[0]["strategy_meta_score"], 0.0)
 
 
 if __name__ == "__main__":

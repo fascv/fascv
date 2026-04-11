@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import subprocess
 from pathlib import Path
@@ -42,6 +43,13 @@ ACTIVE_FILE = REPO_ROOT / "configs" / "rotation_active_lanes.json"
 START_SCRIPT = REPO_ROOT / "scripts" / "rotation_guards_start.sh"
 CONFIG_TEMPLATE = REPO_ROOT / "configs" / "live_binance_kaito_usdc_rotation.yaml"
 SELECTOR_CACHE_FILE = REPO_ROOT / "logs" / "rotation_selector_rows_cache.json"
+COIN_EXPERIENCE_DEFAULT_LOOKBACK_DAYS = 21.0
+COIN_EXPERIENCE_DEFAULT_HALF_LIFE_DAYS = 5.0
+COIN_EXPERIENCE_DEFAULT_MIN_TRADES = 2
+COIN_EXPERIENCE_DEFAULT_MIN_WEIGHTED_TRADES = 1.2
+COIN_EXPERIENCE_DEFAULT_FULL_WEIGHT_TRADES = 5.0
+COIN_EXPERIENCE_DEFAULT_MAX_ABS_SCORE = 36.0
+COIN_EXPERIENCE_DEFAULT_MIN_ABS_SCORE = 2.0
 FAST_SCOUT_LINE_LIMIT = 800
 FAST_SCOUT_MAX_BYTES = 512 * 1024
 LIVE_DECISION_LINE_LIMIT = 192
@@ -1812,6 +1820,347 @@ def _load_previous_rows_snapshot() -> list[dict]:
             continue
         out.append(item)
     return out
+
+
+def _coin_experience_settings() -> dict[str, float | int | bool]:
+    return {
+        "enabled": _env_flag("ROTATION_COIN_EXPERIENCE_PRIOR_ENABLED", default=False),
+        "lookback_days": max(
+            1.0,
+            _as_float(
+                os.environ.get("ROTATION_COIN_EXPERIENCE_LOOKBACK_DAYS"),
+                COIN_EXPERIENCE_DEFAULT_LOOKBACK_DAYS,
+            ),
+        ),
+        "half_life_days": max(
+            0.25,
+            _as_float(
+                os.environ.get("ROTATION_COIN_EXPERIENCE_HALF_LIFE_DAYS"),
+                COIN_EXPERIENCE_DEFAULT_HALF_LIFE_DAYS,
+            ),
+        ),
+        "min_trades": max(
+            1,
+            int(
+                _as_float(
+                    os.environ.get("ROTATION_COIN_EXPERIENCE_MIN_TRADES"),
+                    COIN_EXPERIENCE_DEFAULT_MIN_TRADES,
+                )
+            ),
+        ),
+        "min_weighted_trades": max(
+            0.1,
+            _as_float(
+                os.environ.get("ROTATION_COIN_EXPERIENCE_MIN_WEIGHTED_TRADES"),
+                COIN_EXPERIENCE_DEFAULT_MIN_WEIGHTED_TRADES,
+            ),
+        ),
+        "full_weight_trades": max(
+            1.0,
+            _as_float(
+                os.environ.get("ROTATION_COIN_EXPERIENCE_FULL_WEIGHT_TRADES"),
+                COIN_EXPERIENCE_DEFAULT_FULL_WEIGHT_TRADES,
+            ),
+        ),
+        "max_abs_score": max(
+            0.0,
+            _as_float(
+                os.environ.get("ROTATION_COIN_EXPERIENCE_MAX_ABS_SCORE"),
+                COIN_EXPERIENCE_DEFAULT_MAX_ABS_SCORE,
+            ),
+        ),
+        "min_abs_score": max(
+            0.0,
+            _as_float(
+                os.environ.get("ROTATION_COIN_EXPERIENCE_MIN_ABS_SCORE"),
+                COIN_EXPERIENCE_DEFAULT_MIN_ABS_SCORE,
+            ),
+        ),
+    }
+
+
+def _coin_experience_base_symbol(raw_symbol: object) -> str:
+    symbol = str(raw_symbol or "").strip().upper().replace("/", "").replace("_", "").replace("-", "")
+    if symbol.endswith("USDC") and len(symbol) > 4:
+        symbol = symbol[:-4]
+    return symbol
+
+
+def _parse_trade_timestamp(raw: object) -> datetime | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        ts = datetime.fromisoformat(text)
+    except Exception:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(timezone.utc)
+
+
+def _build_coin_experience_priors_from_rows(
+    trade_rows: list[dict],
+    *,
+    now: datetime,
+    settings: dict[str, float | int | bool],
+) -> tuple[dict[str, dict[str, float | int | bool | str]], dict[str, object]]:
+    lookback_days = max(1.0, float(settings.get("lookback_days", COIN_EXPERIENCE_DEFAULT_LOOKBACK_DAYS) or 0.0))
+    half_life_days = max(0.25, float(settings.get("half_life_days", COIN_EXPERIENCE_DEFAULT_HALF_LIFE_DAYS) or 0.0))
+    min_trades = max(1, int(settings.get("min_trades", COIN_EXPERIENCE_DEFAULT_MIN_TRADES) or 1))
+    min_weighted_trades = max(
+        0.1,
+        float(settings.get("min_weighted_trades", COIN_EXPERIENCE_DEFAULT_MIN_WEIGHTED_TRADES) or 0.0),
+    )
+    full_weight_trades = max(
+        1.0,
+        float(settings.get("full_weight_trades", COIN_EXPERIENCE_DEFAULT_FULL_WEIGHT_TRADES) or 0.0),
+    )
+    max_abs_score = max(
+        0.0,
+        float(settings.get("max_abs_score", COIN_EXPERIENCE_DEFAULT_MAX_ABS_SCORE) or 0.0),
+    )
+    min_abs_score = max(
+        0.0,
+        float(settings.get("min_abs_score", COIN_EXPERIENCE_DEFAULT_MIN_ABS_SCORE) or 0.0),
+    )
+    now_utc = now.astimezone(timezone.utc)
+    stats: dict[str, dict[str, float | int | str]] = {}
+    skipped_old = 0
+    skipped_invalid = 0
+
+    for row in trade_rows:
+        if not isinstance(row, dict) or not bool(row.get("closed", True)):
+            continue
+        symbol = _coin_experience_base_symbol(row.get("symbol"))
+        if not symbol or symbol not in PORTS:
+            continue
+        sell_ts = _parse_trade_timestamp(row.get("sellTime"))
+        if sell_ts is None:
+            skipped_invalid += 1
+            continue
+        age_days = max(0.0, (now_utc - sell_ts).total_seconds() / 86400.0)
+        if age_days > lookback_days:
+            skipped_old += 1
+            continue
+        pnl = _as_float(row.get("proceedsUsdc"), 0.0)
+        buy_gross = max(1e-9, _as_float(row.get("buyGrossUsdc"), 0.0))
+        pnl_bps = max(-700.0, min(700.0, (pnl / buy_gross) * 10000.0))
+        weight = 0.5 ** (age_days / half_life_days)
+        item = stats.setdefault(
+            symbol,
+            {
+                "raw_trade_count": 0,
+                "weighted_trade_count": 0.0,
+                "weighted_win_count": 0.0,
+                "weighted_pnl_usdc": 0.0,
+                "weighted_pnl_bps": 0.0,
+                "weighted_gross_profit_usdc": 0.0,
+                "weighted_gross_loss_usdc": 0.0,
+                "last_sell_time": "",
+            },
+        )
+        item["raw_trade_count"] = int(item["raw_trade_count"]) + 1
+        item["weighted_trade_count"] = float(item["weighted_trade_count"]) + weight
+        item["weighted_pnl_usdc"] = float(item["weighted_pnl_usdc"]) + (pnl * weight)
+        item["weighted_pnl_bps"] = float(item["weighted_pnl_bps"]) + (pnl_bps * weight)
+        if pnl > 0.0:
+            item["weighted_win_count"] = float(item["weighted_win_count"]) + weight
+            item["weighted_gross_profit_usdc"] = float(item["weighted_gross_profit_usdc"]) + (pnl * weight)
+        elif pnl < 0.0:
+            item["weighted_gross_loss_usdc"] = float(item["weighted_gross_loss_usdc"]) + (pnl * weight)
+        last_sell = str(item.get("last_sell_time", "") or "")
+        sell_iso = sell_ts.isoformat()
+        if not last_sell or sell_iso > last_sell:
+            item["last_sell_time"] = sell_iso
+
+    priors: dict[str, dict[str, float | int | bool | str]] = {}
+    applied_symbols = 0
+    neutral_symbols = 0
+    for symbol, item in stats.items():
+        raw_count = int(item.get("raw_trade_count", 0) or 0)
+        weighted_count = float(item.get("weighted_trade_count", 0.0) or 0.0)
+        if weighted_count <= 0.0:
+            continue
+        win_rate = float(item.get("weighted_win_count", 0.0) or 0.0) / weighted_count
+        expectancy_bps = float(item.get("weighted_pnl_bps", 0.0) or 0.0) / weighted_count
+        expectancy_usdc = float(item.get("weighted_pnl_usdc", 0.0) or 0.0) / weighted_count
+        gross_profit = float(item.get("weighted_gross_profit_usdc", 0.0) or 0.0)
+        gross_loss = float(item.get("weighted_gross_loss_usdc", 0.0) or 0.0)
+        if gross_profit > 0.0 and gross_loss < 0.0:
+            profit_factor = gross_profit / abs(gross_loss)
+        elif gross_profit > 0.0:
+            profit_factor = 999.0
+        else:
+            profit_factor = 0.0
+        sample_ok = raw_count >= min_trades and weighted_count >= min_weighted_trades
+        score = 0.0
+        if sample_ok and max_abs_score > 0.0:
+            pf_for_score = max(0.25, min(4.0, profit_factor if profit_factor > 0.0 else 0.25))
+            score = expectancy_bps * 0.45
+            score += (win_rate - 0.52) * 32.0
+            score += math.log(pf_for_score, 2.0) * 7.0
+            sample_confidence = min(1.0, weighted_count / full_weight_trades)
+            score *= sample_confidence
+            score = max(-max_abs_score, min(max_abs_score, score))
+            if abs(score) < min_abs_score:
+                score = 0.0
+        if abs(score) > 0.0:
+            applied_symbols += 1
+        else:
+            neutral_symbols += 1
+        priors[symbol] = {
+            "score": round(score, 6),
+            "sample_ok": bool(sample_ok),
+            "raw_trade_count": raw_count,
+            "weighted_trade_count": round(weighted_count, 6),
+            "win_rate": round(win_rate, 6),
+            "expectancy_bps": round(expectancy_bps, 6),
+            "expectancy_usdc": round(expectancy_usdc, 8),
+            "profit_factor": round(profit_factor, 6) if profit_factor < 999.0 else 999.0,
+            "last_sell_time": str(item.get("last_sell_time", "") or ""),
+        }
+
+    info = {
+        "lookback_days": lookback_days,
+        "half_life_days": half_life_days,
+        "min_trades": min_trades,
+        "min_weighted_trades": min_weighted_trades,
+        "full_weight_trades": full_weight_trades,
+        "max_abs_score": max_abs_score,
+        "min_abs_score": min_abs_score,
+        "trade_rows_seen": len(trade_rows),
+        "symbols_seen": len(stats),
+        "symbols_scored": applied_symbols,
+        "symbols_neutral": neutral_symbols,
+        "skipped_old_rows": skipped_old,
+        "skipped_invalid_rows": skipped_invalid,
+    }
+    return priors, info
+
+
+def _load_coin_experience_priors(
+    *,
+    now: datetime,
+    quote_asset: str = "USDC",
+) -> tuple[dict[str, dict[str, float | int | bool | str]], dict[str, object]]:
+    settings = _coin_experience_settings()
+    info: dict[str, object] = dict(settings)
+    if not bool(settings.get("enabled", False)):
+        info.update({"status": "disabled", "symbols_scored": 0})
+        return {}, info
+    if str(quote_asset or "").strip().upper() != "USDC":
+        info.update({"status": "unsupported_quote_asset", "symbols_scored": 0})
+        return {}, info
+    now_utc = now.astimezone(timezone.utc)
+    lookback_days = float(settings.get("lookback_days", COIN_EXPERIENCE_DEFAULT_LOOKBACK_DAYS) or 0.0)
+    from_dt = now_utc - timedelta(days=max(1.0, lookback_days))
+    from_iso = from_dt.isoformat().replace("+00:00", "Z")
+    to_iso = now_utc.isoformat().replace("+00:00", "Z")
+    info.update({"from_iso": from_iso, "to_iso": to_iso})
+    try:
+        from trading.binance.trade_mirror import collect_trades_mirror
+
+        report = collect_trades_mirror(from_iso, to_iso)
+        trade_rows = report.get("tradeRows") if isinstance(report, dict) else []
+        if not isinstance(trade_rows, list):
+            trade_rows = []
+        priors, build_info = _build_coin_experience_priors_from_rows(
+            [row for row in trade_rows if isinstance(row, dict)],
+            now=now_utc,
+            settings=settings,
+        )
+        info.update(build_info)
+        info.update({"status": "ok", "source": "binance_trade_mirror"})
+        return priors, info
+    except Exception as exc:
+        info.update(
+            {
+                "status": "error",
+                "error": str(exc).strip() or repr(exc),
+                "symbols_scored": 0,
+            }
+        )
+        return {}, info
+
+
+def _apply_coin_experience_priors(
+    rows: list[dict],
+    priors: dict[str, dict[str, float | int | bool | str]],
+    *,
+    enabled: bool,
+) -> None:
+    for row in rows:
+        symbol = _coin_experience_base_symbol(row.get("symbol"))
+        prior = priors.get(symbol, {})
+        score = _as_float(prior.get("score"), 0.0)
+        row["coin_experience_prior_enabled"] = bool(enabled)
+        row["coin_experience_score"] = round(score, 6)
+        row["coin_experience_sample_ok"] = bool(prior.get("sample_ok", False))
+        row["coin_experience_trade_count"] = int(prior.get("raw_trade_count", 0) or 0)
+        row["coin_experience_weighted_trade_count"] = round(
+            _as_float(prior.get("weighted_trade_count"), 0.0),
+            6,
+        )
+        row["coin_experience_win_rate"] = round(_as_float(prior.get("win_rate"), 0.0), 6)
+        row["coin_experience_expectancy_bps"] = round(
+            _as_float(prior.get("expectancy_bps"), 0.0),
+            6,
+        )
+        row["coin_experience_expectancy_usdc"] = round(
+            _as_float(prior.get("expectancy_usdc"), 0.0),
+            8,
+        )
+        row["coin_experience_profit_factor"] = round(
+            _as_float(prior.get("profit_factor"), 0.0),
+            6,
+        )
+        row["coin_experience_last_sell_time"] = str(prior.get("last_sell_time", "") or "")
+        if not enabled or abs(score) <= 0.0:
+            continue
+        strategy_scores = row.get("strategy_scores")
+        if not isinstance(strategy_scores, dict) or not strategy_scores:
+            continue
+        existing_ordered = sorted(
+            (
+                (str(strategy), _as_float(value, 0.0))
+                for strategy, value in strategy_scores.items()
+                if _as_float(value, 0.0) > 0.0
+            ),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        if not existing_ordered:
+            continue
+        row["score"] = round(_as_float(row.get("score"), 0.0) + score, 6)
+        existing_base_meta = existing_ordered[0][1]
+        if len(existing_ordered) > 1:
+            existing_base_meta += 0.18 * sum(value for _, value in existing_ordered[1:])
+        meta_extra = _candidate_meta_score(row) - existing_base_meta
+        adjusted_scores = {
+            str(strategy): round(max(0.0, _as_float(value, 0.0) + score), 6)
+            for strategy, value in strategy_scores.items()
+        }
+        adjusted_scores = {
+            strategy: value
+            for strategy, value in adjusted_scores.items()
+            if value > 0.0
+        }
+        row["strategy_scores"] = adjusted_scores
+        ordered = sorted(adjusted_scores.items(), key=lambda item: item[1], reverse=True)
+        row["strategy_tags"] = [strategy for strategy, _ in ordered]
+        row["strategy_primary"] = ordered[0][0] if ordered else ""
+        row["strategy_primary_score"] = round(ordered[0][1], 6) if ordered else 0.0
+        if ordered:
+            meta_score = ordered[0][1]
+            if len(ordered) > 1:
+                meta_score += 0.18 * sum(value for _, value in ordered[1:])
+            meta_score += meta_extra
+        else:
+            meta_score = min(0.0, _candidate_meta_score(row) + score)
+        row["strategy_meta_score"] = round(meta_score, 6)
 
 
 def _tail_lines_from_end(
@@ -4707,10 +5056,31 @@ def _local_live_strategy_block(row: dict, strategy: str, profile_name: str) -> b
     return net24_pct < 0.0
 
 
+def _strategy_rankings_from_rows(rows: list[dict]) -> dict[str, list[dict]]:
+    enabled_strategies = _enabled_strategy_names()
+    rankings: dict[str, list[dict]] = {name: [] for name in enabled_strategies}
+    for strategy in enabled_strategies:
+        ranked_rows = [
+            row
+            for row in rows
+            if _strategy_score(row, strategy) > 0.0
+            and (bool(row.get("keep_open")) or _candidate_meta_score(row) > 0.0)
+        ]
+        ranked_rows.sort(
+            key=lambda row: (
+                _strategy_score(row, strategy),
+                _candidate_meta_score(row),
+                _as_float(row.get("score"), 0.0),
+            ),
+            reverse=True,
+        )
+        rankings[strategy] = ranked_rows
+    return rankings
+
+
 def _annotate_rows_with_strategy_views(rows: list[dict], profile_name: str) -> dict[str, list[dict]]:
     enabled_strategies = _enabled_strategy_names()
     enabled_strategy_set = set(enabled_strategies)
-    rankings: dict[str, list[dict]] = {name: [] for name in enabled_strategies}
     strategy_weight_multipliers, strategy_weight_source = _strategy_weight_multipliers()
     strategy_weights, _strategy_weights_source = _strategy_weight_overrides()
     strategy_actions, _strategy_action_source = _strategy_action_overrides()
@@ -4860,23 +5230,7 @@ def _annotate_rows_with_strategy_views(rows: list[dict], profile_name: str) -> d
         row["meta_strategy_top_tags"] = meta_strategy_tags
         row["meta_override_source"] = meta_override_source
 
-    for strategy in enabled_strategies:
-        ranked_rows = [
-            row
-            for row in rows
-            if _strategy_score(row, strategy) > 0.0
-            and (bool(row.get("keep_open")) or _candidate_meta_score(row) > 0.0)
-        ]
-        ranked_rows.sort(
-            key=lambda row: (
-                _strategy_score(row, strategy),
-                _candidate_meta_score(row),
-                _as_float(row.get("score"), 0.0),
-            ),
-            reverse=True,
-        )
-        rankings[strategy] = ranked_rows
-    return rankings
+    return _strategy_rankings_from_rows(rows)
 
 
 def _strategy_slot_plan(profile_name: str, top: int) -> list[str]:
@@ -4936,6 +5290,7 @@ def _serialize_strategy_rankings(rankings: dict[str, list[dict]], limit: int = S
                     "weight_mult": round(_as_float((row.get("strategy_weight_multipliers") or {}).get(strategy), 1.0), 6),
                     "primary": str(row.get("strategy_primary", "") or ""),
                     "meta_score": round(_candidate_meta_score(row), 6),
+                    "coin_experience_score": round(_as_float(row.get("coin_experience_score"), 0.0), 6),
                     "gate_reason": str(row.get("gate_reason", "") or ""),
                     "eligible": bool(row.get("eligible")),
                     "keep_open": bool(row.get("keep_open")),
@@ -5503,7 +5858,18 @@ def build_selector_payload(
             return (1, 9999, -float(row.get("score", 0.0)))
 
         rows = sorted(rows, key=_row_key)
+    generated_at = generated_at if generated_at is not None else datetime.now(timezone.utc)
     strategy_rankings_rows = _annotate_rows_with_strategy_views(rows, profile_name)
+    coin_experience_priors, coin_experience_prior = _load_coin_experience_priors(
+        now=generated_at,
+        quote_asset=str(result.get("quote_asset", "USDC") or "USDC"),
+    )
+    _apply_coin_experience_priors(
+        rows,
+        coin_experience_priors,
+        enabled=bool(coin_experience_prior.get("enabled", False)),
+    )
+    strategy_rankings_rows = _strategy_rankings_from_rows(rows)
     previous_payload = previous_payload if isinstance(previous_payload, dict) else _load_previous_payload()
     previous, previous_selected_since, previous_watch_symbols = _load_previous_state(previous_payload)
     previous_selected_strategy_map = {
@@ -5521,7 +5887,6 @@ def build_selector_payload(
                 selection_rows.append(row)
     if len(selection_rows) < max(1, int(top)):
         selection_rows = list(rows)
-    generated_at = generated_at if generated_at is not None else datetime.now(timezone.utc)
     selected, selected_strategy_map, strategy_sequence_used = _choose_selected(
         rows=selection_rows,
         previous=previous,
@@ -5637,6 +6002,7 @@ def build_selector_payload(
         "selected_alpha_map": build_selected_alpha_map(selected_strategy_map),
         "selected_strategy_sequence": strategy_sequence_used,
         "strategy_rankings": _serialize_strategy_rankings(strategy_rankings_rows),
+        "coin_experience_prior": coin_experience_prior,
         "selection_rows_total": len(selection_rows),
         "selection_relaxed": len(candidate_rows) < max(1, int(top)),
         "active_candidate_count": len(candidate_rows),
