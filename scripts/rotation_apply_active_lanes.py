@@ -767,21 +767,25 @@ def _set_lane_watch_only(
         return False
     snap = _lane_snapshot(symbol, control_port)
     has_inventory = _lane_has_position_inventory(snap)
+    open_orders = int(snap.get("open_orders_count", 0) or 0) if isinstance(snap, dict) else 0
+    trading_enabled = bool(snap.get("trading_enabled", True)) if isinstance(snap, dict) else True
     if keep_trading_enabled:
-        _post_control(control_port, "/cancel_all", timeout=1.0)
-        if not bool(snap.get("trading_enabled", True)):
+        if open_orders > 0:
+            _post_control(control_port, "/cancel_all", timeout=1.0)
+        if not trading_enabled:
             _post_control(control_port, "/resume", timeout=1.0)
             _wait_lane_trading_enabled(control_port, enabled=True, timeout=4.0)
         return has_inventory and not force_pause_with_inventory
     if has_inventory and not force_pause_with_inventory:
-        if not bool(snap.get("trading_enabled", True)):
+        if not trading_enabled:
             _post_control(control_port, "/resume", timeout=1.0)
             _wait_lane_trading_enabled(control_port, enabled=True, timeout=4.0)
         return True
-    if bool(snap.get("trading_enabled", True)):
+    if trading_enabled:
         _post_control(control_port, "/pause", timeout=1.0)
         _wait_lane_trading_enabled(control_port, enabled=False, timeout=4.0)
-    _post_control(control_port, "/cancel_all", timeout=1.0)
+    if trading_enabled or open_orders > 0:
+        _post_control(control_port, "/cancel_all", timeout=1.0)
     return has_inventory and not force_pause_with_inventory
 
 
@@ -1449,14 +1453,7 @@ def main() -> None:
             _exec_enabled_from_rendered(current_rendered)
             != _exec_enabled_from_rendered(desired_rendered)
         )
-        if exec_flag_changed:
-            restart_required_symbols.add(symbol)
-        if (
-            lane_running
-            and _should_defer_runtime_update(snap, current_rendered, desired_rendered)
-            and not manual_flag_changed
-            and not exec_flag_changed
-        ):
+        if lane_running and _should_defer_runtime_update(snap, current_rendered, desired_rendered):
             live_strategy, live_alpha = _load_lane_runtime_metadata(symbol)
             deferred_runtime_symbols.add(symbol)
             deferred_runtime_updates.append(
@@ -1472,6 +1469,8 @@ def main() -> None:
             watch_alpha_map[symbol] = alpha_type
             runtime_config_changed[symbol] = False
             continue
+        if exec_flag_changed:
+            restart_required_symbols.add(symbol)
         alpha_type, changed = _write_lane_runtime_config(
             symbol,
             strategy_name,
@@ -1488,6 +1487,12 @@ def main() -> None:
 
     for symbol in POOL:
         if symbol in watch_symbols:
+            continue
+        control_port = int(LANES[symbol]["ports"][0])
+        unit_service = _lane_unit_name(symbol)
+        lane_running = _http_ok(control_port, timeout=0.5)
+        active_state, sub_state = _unit_state(unit_service)
+        if not lane_running and active_state in {"", "inactive"} and sub_state in {"", "dead", "failed", "exited"}:
             continue
         _stop_lane(symbol)
         _cleanup_lane_orphan_processes(symbol)

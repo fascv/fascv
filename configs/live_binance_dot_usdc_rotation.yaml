@@ -178,6 +178,7 @@ risk:
   max_entry_notional_to_depth_ratio: 1.0
   full_position_only: true
   require_break_even_for_exit: false
+  profit_only_auto_exits: true
   min_exit_profit_bps: 14.0
   hard_take_profit_bps: 0.0
   dynamic_profit_target_enabled: false

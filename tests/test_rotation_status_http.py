@@ -121,6 +121,25 @@ class TestRotationStatusHttp(unittest.TestCase):
         self.assertEqual(view["active_rows"][0]["lane"], "rebound")
         self.assertEqual([row["symbol"] for row in view["blocked_rows"]], ["WLD"])
 
+    def test_build_view_model_keeps_selected_scope_symbol_even_without_rows(self) -> None:
+        state = {
+            "generated_at": "2026-04-19T06:00:00+00:00",
+            "selected": ["SIGN"],
+            "watch_symbols": ["SIGN"],
+            "selected_strategy_map": {"SIGN": "rebound"},
+            "rows": [],
+            "all_rows": [],
+        }
+
+        with mock.patch.object(rotation_status_http.subprocess, "check_output", return_value=""):
+            view = rotation_status_http._build_view_model(state)
+
+        self.assertEqual(view["selected"], ["SIGN"])
+        self.assertEqual([row["symbol"] for row in view["active_rows"]], ["SIGN"])
+        self.assertEqual(view["active_rows"][0]["lane"], "rebound")
+        self.assertEqual(view["active_rows"][0]["gate_reason"], "fallback_scope_symbol")
+        self.assertEqual(view["blocked_rows"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

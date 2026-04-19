@@ -62,6 +62,12 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from trading.binance import trade_mirror as binance_trade_mirror
+from trading.rotation_scope import (
+    rotation_rows,
+    rotation_scope_symbols,
+    rotation_selected_symbols,
+    rotation_watch_symbols,
+)
 
 LOGS_DIR = os.path.join(REPO_ROOT, "logs")
 DEFAULT_ROTATION_ACTIVE_FILE = os.path.abspath(
@@ -117,6 +123,8 @@ NON_BUY_REASON_TEXT: dict[str, str] = {
     "corridor_wait_stage_touch": "Wartet auf Beruehrung der Kaufzone",
     "data_pending": "Daten werden noch aktualisiert",
     "edge_below_entry": "Chance zu klein fuer einen sauberen Einstieg",
+    "fallback_running_lane": "Lane laeuft, aber der aktuelle Selektor-Stand fehlt",
+    "fallback_scope_symbol": "Coin ist noch relevant, aber im aktuellen Selektor-Stand nicht enthalten",
     "entry_depth_cap": "Kauf waere fuer das Orderbuch zu gross",
     "entry_depth_low": "Orderbuch zu duenn fuer den Einstieg",
     "entry_depth_unknown": "Orderbuchtiefe noch unbekannt",
@@ -2398,11 +2406,37 @@ def list_running_rotation_symbols() -> list[str]:
     return lane_symbols
 
 
-def load_rotation_lane_ports() -> dict[str, int]:
+def _load_rotation_lane_port_from_config(symbol: str) -> int | None:
+    slug = str(symbol or "").strip().lower()
+    if not slug:
+        return None
+
+    path = Path(REPO_ROOT) / "configs" / f"live_binance_{slug}_usdc_rotation.yaml"
+    if not path.is_file():
+        return None
+
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    control = payload.get("control")
+    if not isinstance(control, dict):
+        return None
+    try:
+        port = int(control.get("port"))
+    except (TypeError, ValueError):
+        return None
+    return port if port > 0 else None
+
+
+def load_rotation_lane_ports(extra_symbols: list[str] | None = None) -> dict[str, int]:
     if REPO_ROOT not in sys.path:
         sys.path.insert(0, REPO_ROOT)
     try:
-        from trading.rotation_universe import build_lanes
+        from trading.rotation_universe import LEGACY_PORTS, build_lanes
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(f"Rotation-Lanes konnten nicht geladen werden: {exc}") from exc
 
@@ -2415,6 +2449,21 @@ def load_rotation_lane_ports() -> dict[str, int]:
             lane_ports[str(symbol).upper()] = int(ports[0])
         except (TypeError, ValueError):
             continue
+
+    for symbol in extra_symbols or []:
+        symbol_name = str(symbol or "").strip().upper()
+        if not symbol_name or symbol_name in lane_ports:
+            continue
+        legacy_ports = LEGACY_PORTS.get(symbol_name)
+        if isinstance(legacy_ports, tuple) and legacy_ports:
+            try:
+                lane_ports[symbol_name] = int(legacy_ports[0])
+                continue
+            except (TypeError, ValueError):
+                pass
+        config_port = _load_rotation_lane_port_from_config(symbol_name)
+        if config_port is not None:
+            lane_ports[symbol_name] = config_port
     return lane_ports
 
 
@@ -2528,7 +2577,7 @@ def _load_runtime_config_payload(symbol: str) -> dict[str, Any]:
     return payload
 
 
-def _runtime_metadata(symbol: str) -> dict[str, Any]:
+def _runtime_config_metadata(symbol: str) -> dict[str, Any]:
     payload = _load_runtime_config_payload(symbol)
     runtime = payload.get("runtime")
     if not isinstance(runtime, dict):
@@ -2551,13 +2600,17 @@ def _runtime_metadata(symbol: str) -> dict[str, Any]:
     }
 
 
+def _runtime_metadata(symbol: str) -> dict[str, Any]:
+    return _runtime_config_metadata(symbol)
+
+
 def _runtime_strategy_metadata(symbol: str) -> tuple[str, str]:
-    metadata = _runtime_metadata(symbol)
+    metadata = _runtime_config_metadata(symbol)
     return str(metadata.get("strategy", "")), str(metadata.get("alphaType", ""))
 
 
 def _runtime_profit_roll_metadata(symbol: str) -> tuple[bool, float, float]:
-    metadata = _runtime_metadata(symbol)
+    metadata = _runtime_config_metadata(symbol)
     return (
         bool(metadata.get("profitRollExitEnabled", False)),
         float(metadata.get("profitRollArmUsdc", 0.0)),
@@ -2566,8 +2619,36 @@ def _runtime_profit_roll_metadata(symbol: str) -> tuple[bool, float, float]:
 
 
 def _runtime_manual_entry_exit_only(symbol: str) -> bool:
-    metadata = _runtime_metadata(symbol)
+    metadata = _runtime_config_metadata(symbol)
     return bool(metadata.get("manualEntryExitOnly", False))
+
+
+def _metadata_from_live_status(payload: Any, runtime_meta: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(runtime_meta)
+    if not isinstance(payload, dict):
+        return merged
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return merged
+    core = data.get("core")
+    if not isinstance(core, dict):
+        return merged
+
+    alpha_type = _normalize_strategy_name(core.get("alpha_type"))
+    if alpha_type:
+        merged["alphaType"] = alpha_type
+
+    active_strategy = _normalize_strategy_name(core.get("alpha_active_strategy"))
+    if active_strategy:
+        merged["strategy"] = active_strategy
+
+    if "manual_entry_exit_only" in core:
+        merged["manualEntryExitOnly"] = to_bool(
+            core.get("manual_entry_exit_only"),
+            bool(merged.get("manualEntryExitOnly", False)),
+        )
+
+    return merged
 
 
 def _display_rotation_strategy(snapshot_strategy: Any, runtime_strategy: Any) -> str:
@@ -2583,48 +2664,38 @@ def _display_rotation_strategy(snapshot_strategy: Any, runtime_strategy: Any) ->
 def load_rotation_points() -> dict[str, Any]:
     rotation_file, payload = load_rotation_payload()
 
-    selected_symbols = {
-        str(item).strip().upper()
-        for item in payload.get("selected", [])
-        if str(item).strip()
+    selected_symbols = set(rotation_selected_symbols(payload))
+    rows_source = list(rotation_rows(payload))
+    running_symbols = list_running_rotation_symbols()
+    existing_symbols = {
+        str(item.get("symbol", "")).strip().upper()
+        for item in rows_source
+        if isinstance(item, dict)
     }
-
-    rows_source = payload.get("all_rows")
-    if not isinstance(rows_source, list):
-        rows_source = payload.get("rows")
-    if not isinstance(rows_source, list):
-        rows_source = []
-
-    # Fallback for stale selector snapshots:
-    # when the JSON only contains one/no row, derive symbols from running lanes
-    # so the overview remains useful.
-    if len(rows_source) <= 1:
-        lane_symbols = list_running_rotation_symbols()
-        if lane_symbols:
-            existing_symbols = {
-                str(item.get("symbol", "")).strip().upper()
-                for item in rows_source
-                if isinstance(item, dict)
+    for symbol in rotation_scope_symbols(
+        payload,
+        running_symbols=running_symbols,
+        include_watch=True,
+        include_selected=True,
+        include_rows=False,
+    ):
+        if symbol in existing_symbols:
+            continue
+        gate_reason = "fallback_running_lane" if symbol in running_symbols else "fallback_scope_symbol"
+        rows_source.append(
+            {
+                "symbol": symbol,
+                "market": f"{symbol}USDC",
+                "eligible": symbol in selected_symbols,
+                "score": 0.0,
+                "gate_reason": gate_reason,
+                "slope_profile_match": False,
+                "macro_up_context": False,
+                "long_term_uptrend_context": False,
+                "structure_phase": "",
             }
-            synthetic_rows: list[dict[str, Any]] = []
-            for symbol in lane_symbols:
-                if symbol in existing_symbols:
-                    continue
-                synthetic_rows.append(
-                    {
-                        "symbol": symbol,
-                        "market": f"{symbol}USDC",
-                        "eligible": True,
-                        "score": 0.0,
-                        "gate_reason": "fallback_running_lane",
-                        "slope_profile_match": True,
-                        "macro_up_context": True,
-                        "long_term_uptrend_context": True,
-                        "structure_phase": "uptrend",
-                    }
-                )
-            if synthetic_rows:
-                rows_source.extend(synthetic_rows)
+        )
+        existing_symbols.add(symbol)
 
     rows: list[dict[str, Any]] = []
     for item in rows_source:
@@ -2785,11 +2856,7 @@ def load_rotation_live() -> dict[str, Any]:
         rotation_file, raw_payload = load_rotation_payload()
         strategy_summary = load_rotation_meta_summary()
 
-        selected_symbols = {
-            str(item).strip().upper()
-            for item in raw_payload.get("selected", [])
-            if str(item).strip()
-        }
+        selected_symbols = set(rotation_selected_symbols(raw_payload))
         selected_strategy_map_raw = raw_payload.get("selected_strategy_map")
         selected_strategy_map: dict[str, str] = {}
         if isinstance(selected_strategy_map_raw, dict):
@@ -2806,11 +2873,7 @@ def load_rotation_live() -> dict[str, Any]:
                 if symbol:
                     selected_since[symbol] = str(value).strip()
 
-        rows_source = raw_payload.get("all_rows")
-        if not isinstance(rows_source, list):
-            rows_source = raw_payload.get("rows")
-        if not isinstance(rows_source, list):
-            rows_source = []
+        rows_source = list(rotation_rows(raw_payload))
 
         row_meta_by_symbol: dict[str, dict[str, Any]] = {}
         running_symbols: list[str] = []
@@ -2819,20 +2882,33 @@ def load_rotation_live() -> dict[str, Any]:
                 running_symbols.append(symbol)
 
         running_symbol_set = set(running_symbols)
-        symbols: list[str] = []
-        watch_symbols_raw = raw_payload.get("watch_symbols")
-        watch_symbols_present = isinstance(watch_symbols_raw, list)
+        symbols: list[str]
+        watch_symbols = rotation_watch_symbols(raw_payload, include_selected=False)
+        watch_symbols_present = bool(watch_symbols)
         if running_symbols:
-            symbols.extend(running_symbols)
+            symbols = rotation_scope_symbols(
+                raw_payload,
+                running_symbols=running_symbols,
+                include_watch=False,
+                include_selected=True,
+                include_rows=False,
+            )
         elif watch_symbols_present:
-            for item in watch_symbols_raw:
-                symbol = str(item).strip().upper()
-                if symbol and symbol not in symbols:
-                    symbols.append(symbol)
-
-        for symbol in sorted(selected_symbols):
-            if symbol not in symbols:
-                symbols.append(symbol)
+            symbols = rotation_scope_symbols(
+                raw_payload,
+                running_symbols=None,
+                include_watch=True,
+                include_selected=True,
+                include_rows=False,
+            )
+        else:
+            symbols = rotation_scope_symbols(
+                raw_payload,
+                running_symbols=None,
+                include_watch=False,
+                include_selected=True,
+                include_rows=True,
+            )
 
         for item in rows_source:
             if not isinstance(item, dict):
@@ -2846,7 +2922,18 @@ def load_rotation_live() -> dict[str, Any]:
             if not running_symbols and not watch_symbols_present and symbol not in symbols:
                 symbols.append(symbol)
 
-        lane_ports = load_rotation_lane_ports()
+        for symbol in symbols:
+            if symbol in row_meta_by_symbol:
+                continue
+            row_meta_by_symbol[symbol] = {
+                "symbol": symbol,
+                "market": f"{symbol}USDC",
+                "eligible": symbol in selected_symbols,
+                "score": 0.0,
+                "gate_reason": "fallback_running_lane" if symbol in running_symbol_set else "fallback_scope_symbol",
+            }
+
+        lane_ports = load_rotation_lane_ports(symbols)
         workers = max(1, min(MAX_WORKERS, len(symbols) or 1))
 
         def init_row(
@@ -2994,7 +3081,16 @@ def load_rotation_live() -> dict[str, Any]:
             selector_mid_pos_pct = to_float(meta.get("corridor_mid_pos_pct"), float("nan"))
             selector_long_pos_pct = to_float(meta.get("corridor_long_pos_pct"), float("nan"))
             selected_since_iso = selected_since.get(symbol, "")
-            runtime_meta = _runtime_metadata(symbol)
+            runtime_strategy, runtime_alpha_type = _runtime_strategy_metadata(symbol)
+            profit_roll_enabled, profit_roll_arm_usdc, profit_roll_retrace_usdc = _runtime_profit_roll_metadata(symbol)
+            runtime_meta = {
+                "strategy": runtime_strategy,
+                "alphaType": runtime_alpha_type,
+                "profitRollExitEnabled": profit_roll_enabled,
+                "profitRollArmUsdc": profit_roll_arm_usdc,
+                "profitRollRetraceUsdc": profit_roll_retrace_usdc,
+                "manualEntryExitOnly": _runtime_manual_entry_exit_only(symbol),
+            }
 
             row = init_row(
                 symbol=symbol,
@@ -3029,6 +3125,14 @@ def load_rotation_live() -> dict[str, Any]:
                 row["statusError"] = str(exc)
                 row["state"] = "down"
                 return row
+
+            live_meta = _metadata_from_live_status(payload, runtime_meta)
+            row["strategy"] = _display_rotation_strategy(
+                selected_strategy_map.get(symbol, ""),
+                live_meta.get("strategy", ""),
+            )
+            row["alphaType"] = str(live_meta.get("alphaType", ""))
+            row["manualEntryExitOnly"] = bool(live_meta.get("manualEntryExitOnly", False))
 
             data = payload.get("data") if isinstance(payload, dict) else {}
             if not isinstance(data, dict):
@@ -3259,124 +3363,11 @@ def load_rotation_live() -> dict[str, Any]:
 
 
 def normalize_trade(symbol: str, item: dict[str, Any]) -> dict[str, Any] | None:
-    base_coin = symbol.removesuffix("USDC")
-    quote_coin = symbol[len(base_coin) :] if symbol.startswith(base_coin) else ""
-    side = "BUY" if bool(item.get("isBuyer")) else "SELL"
-
-    qty = to_float(item.get("qty"), 0.0)
-    price = to_float(item.get("price"), 0.0)
-    quote_qty = to_float(item.get("quoteQty"), qty * price)
-    time_ms = to_int(item.get("time"), 0)
-    order_id_raw = item.get("orderId")
-    trade_id_raw = item.get("id")
-    order_id = str(order_id_raw).strip() if order_id_raw is not None else ""
-    trade_id = str(trade_id_raw).strip() if trade_id_raw is not None else ""
-
-    commission = to_float(item.get("commission"), 0.0)
-    commission_asset = str(item.get("commissionAsset", "")).upper()
-
-    if qty <= EPS or time_ms <= 0:
-        return None
-
-    fee_usdc = 0.0
-    if commission > EPS:
-        if commission_asset == quote_coin:
-            fee_usdc = commission
-        elif commission_asset == base_coin:
-            fee_usdc = commission * price
-    fee_in_quote = commission_asset == quote_coin
-
-    if side == "BUY":
-        effective_qty = qty
-        if commission_asset == base_coin:
-            effective_qty = max(qty - commission, 0.0)
-        # If fee is charged in base asset, quantity adjustment already captures cost.
-        gross_usdc = quote_qty + (fee_usdc if fee_in_quote else 0.0)
-    else:
-        effective_qty = qty
-        if commission_asset == base_coin:
-            effective_qty = qty + commission
-        # If fee is charged in base asset, quantity adjustment already captures cost.
-        gross_usdc = quote_qty - (fee_usdc if fee_in_quote else 0.0)
-
-    if effective_qty <= EPS:
-        return None
-
-    return {
-        "symbol": symbol,
-        "coin": base_coin,
-        "side": side,
-        "orderId": order_id,
-        "tradeId": trade_id,
-        "timeMs": time_ms,
-        "timeIso": iso_from_ms(time_ms),
-        "quantity": effective_qty,
-        "grossUsdc": gross_usdc,
-        "price": price,
-        "quoteQty": quote_qty,
-        "feeUsdc": fee_usdc,
-        "commissionAsset": commission_asset,
-    }
+    return binance_trade_mirror.normalize_binance_trade(symbol, item)
 
 
 def aggregate_order_fills(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
-    fallback_counter = 0
-
-    for trade in trades:
-        symbol = str(trade["symbol"])
-        side = str(trade["side"])
-        order_id = str(trade.get("orderId", "")).strip()
-        trade_id = str(trade.get("tradeId", "")).strip()
-
-        group_id = order_id
-        if not group_id:
-            if trade_id:
-                group_id = f"trade:{trade_id}"
-            else:
-                group_id = f"fallback:{symbol}:{side}:{fallback_counter}"
-                fallback_counter += 1
-
-        key = (symbol, side, group_id)
-        existing = grouped.get(key)
-        if existing is None:
-            grouped[key] = {
-                "symbol": symbol,
-                "coin": str(trade["coin"]),
-                "side": side,
-                "orderId": order_id,
-                "timeMinMs": int(trade["timeMs"]),
-                "timeMaxMs": int(trade["timeMs"]),
-                "quantity": float(trade["quantity"]),
-                "grossUsdc": float(trade["grossUsdc"]),
-            }
-            continue
-
-        t_ms = int(trade["timeMs"])
-        existing["timeMinMs"] = min(int(existing["timeMinMs"]), t_ms)
-        existing["timeMaxMs"] = max(int(existing["timeMaxMs"]), t_ms)
-        existing["quantity"] = float(existing["quantity"]) + float(trade["quantity"])
-        existing["grossUsdc"] = float(existing["grossUsdc"]) + float(trade["grossUsdc"])
-
-    aggregated: list[dict[str, Any]] = []
-    for item in grouped.values():
-        side = str(item["side"])
-        chosen_ms = int(item["timeMinMs"]) if side == "BUY" else int(item["timeMaxMs"])
-        aggregated.append(
-            {
-                "symbol": str(item["symbol"]),
-                "coin": str(item["coin"]),
-                "side": side,
-                "orderId": str(item.get("orderId", "")),
-                "timeMs": chosen_ms,
-                "timeIso": iso_from_ms(chosen_ms),
-                "quantity": float(item["quantity"]),
-                "grossUsdc": float(item["grossUsdc"]),
-            }
-        )
-
-    aggregated.sort(key=lambda t: (int(t["timeMs"]), str(t["symbol"]), str(t["side"])))
-    return aggregated
+    return binance_trade_mirror.aggregate_order_fills(trades)
 
 
 def build_report(
@@ -3386,253 +3377,12 @@ def build_report(
     *,
     settle_by_sell_time: bool = True,
 ) -> dict[str, Any]:
-    by_symbol: dict[str, list[dict[str, Any]]] = {}
-    total_buy_all = 0.0
-    total_sell_all = 0.0
-    trade_count = 0
-    for trade in normalized_trades:
-        symbol = str(trade["symbol"])
-        by_symbol.setdefault(symbol, []).append(trade)
-        side = str(trade.get("side", "")).upper()
-        gross = float(trade.get("grossUsdc", 0.0) or 0.0)
-        if gross > EPS:
-            if side == "BUY":
-                total_buy_all += gross
-            elif side == "SELL":
-                total_sell_all += gross
-        trade_count += 1
-
-    bundles: list[dict[str, Any]] = []
-    trade_rows: list[dict[str, Any]] = []
-
-    for symbol, trades in by_symbol.items():
-        trades.sort(key=lambda t: int(t["timeMs"]))
-        buy_lots: list[dict[str, Any]] = []
-
-        for trade in trades:
-            qty = float(trade["quantity"])
-            gross = float(trade["grossUsdc"])
-            side = str(trade["side"])
-
-            if qty <= EPS:
-                continue
-
-            if side == "BUY":
-                unit_cost = gross / qty
-                buy_lots.append(
-                    {
-                        "remainingQty": qty,
-                        "unitCost": unit_cost,
-                        "buyTime": str(trade["timeIso"]),
-                    }
-                )
-                continue
-
-            remaining = qty
-            sell_unit = gross / qty
-            sell_time = str(trade["timeIso"])
-
-            while remaining > EPS and buy_lots:
-                lot = buy_lots[0]
-                lot_qty = float(lot["remainingQty"])
-                matched_qty = lot_qty if lot_qty < remaining else remaining
-
-                buy_gross = matched_qty * float(lot["unitCost"])
-                sell_gross = matched_qty * sell_unit
-                proceeds = sell_gross - buy_gross
-
-                bundles.append(
-                    {
-                        "symbol": symbol,
-                        "quantity": round(matched_qty, 8),
-                        "buyTime": str(lot["buyTime"]),
-                        "sellTime": sell_time,
-                        "buyGrossUsdc": round(buy_gross, 8),
-                        "sellGrossUsdc": round(sell_gross, 8),
-                        "proceedsUsdc": round(proceeds, 8),
-                    }
-                )
-                trade_rows.append(
-                    {
-                        "symbol": symbol,
-                        "quantity": round(matched_qty, 8),
-                        "buyTime": str(lot["buyTime"]),
-                        "sellTime": sell_time,
-                        "buyPrice": round(float(lot["unitCost"]), 12),
-                        "sellPrice": round(float(sell_unit), 12),
-                        "buyGrossUsdc": round(buy_gross, 8),
-                        "sellGrossUsdc": round(sell_gross, 8),
-                        "proceedsUsdc": round(proceeds, 8),
-                        "closed": True,
-                    }
-                )
-
-                remaining -= matched_qty
-                lot["remainingQty"] = lot_qty - matched_qty
-                if float(lot["remainingQty"]) <= EPS:
-                    buy_lots.pop(0)
-
-        for lot in buy_lots:
-            remaining_qty = float(lot.get("remainingQty", 0.0) or 0.0)
-            unit_cost = float(lot.get("unitCost", 0.0) or 0.0)
-            if remaining_qty <= EPS or unit_cost <= EPS:
-                continue
-            trade_rows.append(
-                {
-                    "symbol": symbol,
-                    "quantity": round(remaining_qty, 8),
-                    "buyTime": str(lot.get("buyTime") or ""),
-                    "sellTime": "",
-                    "buyPrice": round(unit_cost, 12),
-                    "sellPrice": 0.0,
-                    "buyGrossUsdc": round(remaining_qty * unit_cost, 8),
-                    "sellGrossUsdc": 0.0,
-                    "proceedsUsdc": None,
-                    "closed": False,
-                }
-            )
-
-    bundles.sort(key=lambda b: (b["sellTime"], b["symbol"]))
-    trade_rows.sort(key=lambda row: (str(row.get("buyTime") or ""), str(row.get("symbol") or "")))
-
-    symbol_map: dict[str, dict[str, Any]] = {}
-    for bundle in bundles:
-        symbol = str(bundle["symbol"])
-        entry = symbol_map.setdefault(
-            symbol,
-            {
-                "symbol": symbol,
-                "bundleCount": 0,
-                "buyGrossUsdc": 0.0,
-                "sellGrossUsdc": 0.0,
-                "proceedsUsdc": 0.0,
-            },
-        )
-
-        entry["bundleCount"] += 1
-        entry["buyGrossUsdc"] += float(bundle["buyGrossUsdc"])
-        entry["sellGrossUsdc"] += float(bundle["sellGrossUsdc"])
-        entry["proceedsUsdc"] += float(bundle["proceedsUsdc"])
-
-    symbol_summaries = [
-        {
-            "symbol": item["symbol"],
-            "bundleCount": int(item["bundleCount"]),
-            "buyGrossUsdc": round(float(item["buyGrossUsdc"]), 8),
-            "sellGrossUsdc": round(float(item["sellGrossUsdc"]), 8),
-            "proceedsUsdc": round(float(item["proceedsUsdc"]), 8),
-        }
-        for item in sorted(symbol_map.values(), key=lambda x: str(x["symbol"]))
-    ]
-
-    report_rows = trade_rows
-    if settle_by_sell_time:
-        from_dt = parse_iso_utc(from_iso)
-        to_dt = parse_iso_utc(to_iso)
-        filtered_rows: list[dict[str, Any]] = []
-        for row in trade_rows:
-            if not bool(row.get("closed")):
-                continue
-            sell_time = str(row.get("sellTime") or "").strip()
-            if not sell_time:
-                continue
-            try:
-                sell_dt = parse_iso_utc(sell_time)
-            except Exception:
-                continue
-            if from_dt <= sell_dt < to_dt:
-                filtered_rows.append(row)
-        report_rows = filtered_rows
-
-    if settle_by_sell_time:
-        bundles = [
-            {
-                "symbol": str(row.get("symbol") or ""),
-                "quantity": round(float(row.get("quantity") or 0.0), 8),
-                "buyTime": str(row.get("buyTime") or ""),
-                "sellTime": str(row.get("sellTime") or ""),
-                "buyGrossUsdc": round(float(row.get("buyGrossUsdc") or 0.0), 8),
-                "sellGrossUsdc": round(float(row.get("sellGrossUsdc") or 0.0), 8),
-                "proceedsUsdc": round(float(row.get("proceedsUsdc") or 0.0), 8),
-            }
-            for row in report_rows
-        ]
-        bundles.sort(key=lambda b: (b["sellTime"], b["symbol"]))
-
-        symbol_map = {}
-        for row in report_rows:
-            symbol = str(row.get("symbol") or "")
-            entry = symbol_map.setdefault(
-                symbol,
-                {
-                    "symbol": symbol,
-                    "bundleCount": 0,
-                    "buyGrossUsdc": 0.0,
-                    "sellGrossUsdc": 0.0,
-                    "proceedsUsdc": 0.0,
-                },
-            )
-            entry["bundleCount"] += 1
-            entry["buyGrossUsdc"] += float(row.get("buyGrossUsdc") or 0.0)
-            entry["sellGrossUsdc"] += float(row.get("sellGrossUsdc") or 0.0)
-            entry["proceedsUsdc"] += float(row.get("proceedsUsdc") or 0.0)
-
-        symbol_summaries = [
-            {
-                "symbol": item["symbol"],
-                "bundleCount": int(item["bundleCount"]),
-                "buyGrossUsdc": round(float(item["buyGrossUsdc"]), 8),
-                "sellGrossUsdc": round(float(item["sellGrossUsdc"]), 8),
-                "proceedsUsdc": round(float(item["proceedsUsdc"]), 8),
-            }
-            for item in sorted(symbol_map.values(), key=lambda x: str(x["symbol"]))
-        ]
-
-    total_buy = sum(float(x["buyGrossUsdc"]) for x in symbol_summaries)
-    total_sell = sum(float(x["sellGrossUsdc"]) for x in symbol_summaries)
-    total_proceeds = sum(float(x["proceedsUsdc"]) for x in symbol_summaries)
-
-    if settle_by_sell_time:
-        total_buy_all = round(total_buy, 8)
-        total_sell_all = round(total_sell, 8)
-    else:
-        total_buy_all = round(total_buy_all, 8)
-        total_sell_all = round(total_sell_all, 8)
-    matched_buy = round(total_buy, 8)
-    matched_sell = round(total_sell, 8)
-    matched_proceeds = round(total_proceeds, 8)
-    net_cashflow = round(total_sell_all - total_buy_all, 8)
-
-    day_summary = {
-        "bundleCount": len(bundles),
-        "tradeRowCount": len(report_rows),
-        "closedTradeRowCount": len(report_rows) if settle_by_sell_time else sum(
-            1 for row in report_rows if bool(row.get("closed"))
-        ),
-        "openTradeRowCount": 0 if settle_by_sell_time else sum(
-            1 for row in report_rows if not bool(row.get("closed"))
-        ),
-        "symbolCount": len(symbol_summaries),
-        "tradeCount": (len(report_rows) * 2) if settle_by_sell_time else trade_count,
-        # Top-level totals should reflect all fills in the requested window.
-        "buyGrossUsdc": total_buy_all,
-        "sellGrossUsdc": total_sell_all,
-        # Keep realized PnL semantics based on matched buy/sell bundles.
-        "proceedsUsdc": matched_proceeds,
-        "matchedBuyGrossUsdc": matched_buy,
-        "matchedSellGrossUsdc": matched_sell,
-        "matchedProceedsUsdc": matched_proceeds,
-        "netCashflowUsdc": net_cashflow,
-    }
-
-    return {
-        "fromIso": from_iso,
-        "toIso": to_iso,
-        "tradeRows": report_rows,
-        "bundles": bundles,
-        "symbolSummaries": symbol_summaries,
-        "daySummary": day_summary,
-    }
+    return binance_trade_mirror.build_report(
+        from_iso=from_iso,
+        to_iso=to_iso,
+        normalized_trades=normalized_trades,
+        settle_by_sell_time=settle_by_sell_time,
+    )
 
 
 def collect_trades_local(from_iso: str, to_iso: str, symbols_filter: list[str] | None = None) -> dict[str, Any]:

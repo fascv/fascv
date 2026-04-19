@@ -278,6 +278,35 @@ class TestRelayLiveCampaign(unittest.TestCase):
         self.assertEqual(live["summary"]["running"], 2)
         self.assertEqual(live["summary"]["down"], 0)
 
+    def test_load_rotation_points_keeps_selected_scope_symbol_without_selector_rows(self) -> None:
+        payload = {
+            "selected": ["SIGN"],
+            "watch_symbols": ["SIGN"],
+            "selected_strategy_map": {"SIGN": "rebound"},
+            "all_rows": [],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            active_file = Path(tmp) / "rotation_active_lanes.json"
+            active_file.write_text(json.dumps(payload), encoding="utf-8")
+            old_active_file = relay_server.ROTATION_ACTIVE_FILE
+            try:
+                relay_server.ROTATION_ACTIVE_FILE = str(active_file)
+                with mock.patch.object(relay_server, "list_running_rotation_symbols", return_value=[]):
+                    points = relay_server.load_rotation_points()
+            finally:
+                relay_server.ROTATION_ACTIVE_FILE = old_active_file
+
+        self.assertEqual(points["selected"], ["SIGN"])
+        rows = {row["symbol"]: row for row in points["rows"]}
+        self.assertIn("SIGN", rows)
+        self.assertTrue(rows["SIGN"]["selected"])
+        self.assertEqual(rows["SIGN"]["gateReasonCode"], "fallback_scope_symbol")
+        self.assertEqual(
+            rows["SIGN"]["gateReason"],
+            "Coin ist noch relevant, aber im aktuellen Selektor-Stand nicht enthalten",
+        )
+
     def test_load_rotation_live_prefers_runtime_core_strategy_over_legacy_snapshot(self) -> None:
         payload = {
             "selected": ["ZRO"],
@@ -335,6 +364,69 @@ class TestRelayLiveCampaign(unittest.TestCase):
         self.assertEqual(row["symbol"], "ZRO")
         self.assertEqual(row["strategy"], "continuation")
         self.assertEqual(row["alphaType"], "continuation")
+
+    def test_load_rotation_live_prefers_live_core_strategy_over_runtime_and_snapshot(self) -> None:
+        payload = {
+            "selected": ["ZRO"],
+            "watch_symbols": ["ZRO"],
+            "selected_since": {"ZRO": "2026-03-15T18:51:38.783633+00:00"},
+            "selected_strategy_map": {"ZRO": "breakout_retest"},
+            "all_rows": [
+                {"symbol": "ZRO", "market": "ZROUSDC", "eligible": True, "score": 12.0, "gate_reason": ""}
+            ],
+        }
+
+        status_payload = {
+            "data": {
+                "core": {
+                    "position_btc": 0.0,
+                    "avg_entry_price": 0.0,
+                    "mark_price": 0.0,
+                    "realized_pnl_eur": 0.0,
+                    "unrealized_pnl_eur": 0.0,
+                    "trading_enabled": True,
+                    "alpha_type": "staircase",
+                    "alpha_active_strategy": "rebound",
+                    "manual_entry_exit_only": True,
+                },
+                "exec": {"open_orders_count": 0},
+            },
+            "aggregate": {
+                "open_orders_count": 0,
+                "trading_enabled": True,
+            },
+            "staleness_sec_by_process": {"core": 0.1, "exec": 0.1, "md": 0.1},
+            "stale_warn_sec": 12.0,
+            "overview_trade_ready": False,
+            "updated_at": "2026-03-15T19:00:00Z",
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            active_file = Path(tmp) / "rotation_active_lanes.json"
+            active_file.write_text(json.dumps(payload), encoding="utf-8")
+            old_active_file = relay_server.ROTATION_ACTIVE_FILE
+            old_cache = relay_server._ROTATION_LIVE_CACHE
+            try:
+                relay_server.ROTATION_ACTIVE_FILE = str(active_file)
+                relay_server._ROTATION_LIVE_CACHE = None
+                with (
+                    mock.patch.object(relay_server, "load_rotation_meta_summary", return_value={"available": False}),
+                    mock.patch.object(relay_server, "list_running_rotation_symbols", return_value=["ZRO"]),
+                    mock.patch.object(relay_server, "load_rotation_lane_ports", return_value={"ZRO": 8372}),
+                    mock.patch.object(relay_server, "fetch_local_json", return_value=status_payload),
+                    mock.patch.object(relay_server, "_runtime_strategy_metadata", return_value=("continuation", "continuation")),
+                    mock.patch.object(relay_server, "_runtime_manual_entry_exit_only", return_value=False),
+                ):
+                    live = relay_server.load_rotation_live()
+            finally:
+                relay_server.ROTATION_ACTIVE_FILE = old_active_file
+                relay_server._ROTATION_LIVE_CACHE = old_cache
+
+        row = live["rows"][0]
+        self.assertEqual(row["symbol"], "ZRO")
+        self.assertEqual(row["strategy"], "rebound")
+        self.assertEqual(row["alphaType"], "staircase")
+        self.assertTrue(row["manualEntryExitOnly"])
 
     def test_load_rotation_live_exposes_german_gate_reason_and_raw_code(self) -> None:
         payload = {
@@ -599,9 +691,9 @@ class TestRelayLiveCampaign(unittest.TestCase):
 
         self.assertEqual(report["fillEvents"], 2)
         self.assertEqual(report["daySummary"]["bundleCount"], 1)
-        self.assertAlmostEqual(report["daySummary"]["proceedsUsdc"], -0.0452036, places=6)
+        self.assertAlmostEqual(report["daySummary"]["proceedsUsdc"], -0.04521173, places=6)
         self.assertEqual(len(report["bundles"]), 1)
-        self.assertAlmostEqual(report["bundles"][0]["proceedsUsdc"], -0.0452036, places=6)
+        self.assertAlmostEqual(report["bundles"][0]["proceedsUsdc"], -0.04521173, places=6)
 
     def test_collect_trades_mirror_reads_local_binance_mirror(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -615,7 +707,7 @@ class TestRelayLiveCampaign(unittest.TestCase):
                         "side": "BUY",
                         "orderId": "1",
                         "tradeId": "101",
-                        "timeMs": 1000,
+                        "timeMs": 1773619201000,
                         "timeIso": "2026-03-16T00:00:01Z",
                         "quantity": 1.0,
                         "grossUsdc": 1.01,
@@ -626,7 +718,7 @@ class TestRelayLiveCampaign(unittest.TestCase):
                         "side": "SELL",
                         "orderId": "2",
                         "tradeId": "102",
-                        "timeMs": 2000,
+                        "timeMs": 1773619202000,
                         "timeIso": "2026-03-16T00:00:02Z",
                         "quantity": 1.0,
                         "grossUsdc": 1.20,

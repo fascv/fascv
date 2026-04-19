@@ -16,10 +16,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from trading.rotation_universe import POOL, build_lanes
+from trading.rotation_scope import rotation_rows, rotation_scope_symbols, rotation_selected_symbols
+from trading.rotation_universe import build_lanes
 
 
-LANES = build_lanes(POOL)
+LANES = build_lanes()
 SLUG_TO_SYMBOL = {str(cfg.get("slug", "")).lower(): symbol for symbol, cfg in LANES.items()}
 
 
@@ -150,7 +151,7 @@ def _row_view(row: dict) -> dict:
 
 
 def _build_view_model(state: dict) -> dict:
-    selected = [str(x).upper() for x in (state.get("selected") or [])]
+    selected = rotation_selected_symbols(state)
     selected_set = set(selected)
     selected_strategy_map = {
         str(key).upper(): str(value)
@@ -158,62 +159,71 @@ def _build_view_model(state: dict) -> dict:
         if str(key).strip()
     }
     rows = state.get("rows") or []
-    all_rows = state.get("all_rows") or []
     if not isinstance(rows, list):
         rows = []
-    if not isinstance(all_rows, list):
-        all_rows = []
+    all_rows = list(rotation_rows(state))
     if not all_rows:
-        all_rows = list(rows)
+        all_rows = [row for row in rows if isinstance(row, dict)]
 
-    # Fallback: when selector data is stale/empty (e.g. upstream API ban), surface
-    # currently running lanes so the overview remains informative.
-    if (not rows) and (len(all_rows) <= 1):
-        try:
-            out = subprocess.check_output(
-                ["systemctl", "--user", "list-units", "codex-rotation-*.service", "--state=running", "--no-pager"],
-                cwd=REPO_ROOT,
-                text=True,
-                timeout=5,
-            )
-        except Exception:
-            out = ""
-        running_symbols: list[str] = []
-        for line in out.splitlines():
-            m = re.search(r"codex-rotation-([a-z0-9]+)\.service", line)
-            if not m:
-                continue
-            slug = str(m.group(1)).lower().strip()
-            if slug in {"selector", "status"}:
-                continue
-            symbol = SLUG_TO_SYMBOL.get(slug, "").upper()
-            if symbol and symbol not in running_symbols:
-                running_symbols.append(symbol)
-        if running_symbols:
-            synthetic_rows = []
-            for symbol in running_symbols:
-                is_selected = symbol in selected_set
-                synthetic_rows.append(
-                    {
-                        "symbol": symbol,
-                        "score": 0.0,
-                        "spread_bps": 0.0,
-                        "ret15_bps": 0.0,
-                        "rel15_bps": 0.0,
-                        "pos_pct": 0.0,
-                        "open_notional": 0.0,
-                        "gate_reason": "fallback_running_lane",
-                        "eligible": is_selected,
-                        "keep_open": False,
-                        "setup_type": "fallback_running_lane",
-                        "selected_active": is_selected,
-                        "selected_strategy": selected_strategy_map.get(symbol, ""),
-                    }
-                )
-            all_rows = synthetic_rows
-            rows = [row for row in synthetic_rows if str(row.get("symbol", "")).upper() in selected_set]
+    try:
+        out = subprocess.check_output(
+            ["systemctl", "--user", "list-units", "codex-rotation-*.service", "--state=running", "--no-pager"],
+            cwd=REPO_ROOT,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        out = ""
+    running_symbols: list[str] = []
+    for line in out.splitlines():
+        m = re.search(r"codex-rotation-([a-z0-9]+)\.service", line)
+        if not m:
+            continue
+        slug = str(m.group(1)).lower().strip()
+        if slug in {"selector", "status"}:
+            continue
+        symbol = SLUG_TO_SYMBOL.get(slug, slug.upper()).upper()
+        if symbol and symbol not in running_symbols:
+            running_symbols.append(symbol)
 
-    active_rows = rows if rows else [row for row in all_rows if str(row.get("symbol", "")).upper() in selected_set]
+    existing_symbols = {
+        str(row.get("symbol", "")).strip().upper()
+        for row in all_rows
+        if isinstance(row, dict)
+    }
+    for symbol in rotation_scope_symbols(
+        state,
+        running_symbols=running_symbols,
+        include_watch=True,
+        include_selected=True,
+        include_rows=False,
+    ):
+        if symbol in existing_symbols:
+            continue
+        is_selected = symbol in selected_set
+        gate_reason = "fallback_running_lane" if symbol in running_symbols else "fallback_scope_symbol"
+        all_rows.append(
+            {
+                "symbol": symbol,
+                "score": 0.0,
+                "spread_bps": 0.0,
+                "ret15_bps": 0.0,
+                "rel15_bps": 0.0,
+                "pos_pct": 0.0,
+                "open_notional": 0.0,
+                "gate_reason": gate_reason,
+                "eligible": is_selected,
+                "keep_open": False,
+                "setup_type": gate_reason,
+                "selected_active": is_selected,
+                "selected_strategy": selected_strategy_map.get(symbol, ""),
+            }
+        )
+        existing_symbols.add(symbol)
+
+    active_rows = [row for row in all_rows if str(row.get("symbol", "")).upper() in selected_set]
+    if not active_rows:
+        active_rows = rows
     next_rows = [
         row
         for row in all_rows

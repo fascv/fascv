@@ -15,7 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from trading.rotation_universe import PORTS
+from trading.rotation_scope import rotation_rows, rotation_selected_symbols, rotation_watch_symbols
 from trading.meta.strategy_views import STRATEGY_NAMES
 ACTIVE_FILE = REPO_ROOT / "configs" / "rotation_active_lanes.json"
 UNIVERSE_REPORT_FILE = REPO_ROOT / "logs" / "shadow_usdc_scalp_report.json"
@@ -63,30 +63,14 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 
 def _symbol_list(raw: Any) -> list[str]:
-    values: list[str] = []
-    if isinstance(raw, list):
-        items = raw
-    else:
-        items = str(raw or "").split(",")
-    for item in items:
-        symbol = str(item).strip().upper()
-        if symbol and symbol in PORTS and symbol not in values:
-            values.append(symbol)
-    return values
+    return rotation_watch_symbols({"watch_symbols": raw}, include_selected=False)
 
 
 def _row_map(active_state: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    rows = active_state.get("all_rows")
-    if not isinstance(rows, list):
-        rows = active_state.get("rows")
-    if not isinstance(rows, list):
-        rows = []
     result: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
+    for row in rotation_rows(active_state):
         symbol = str(row.get("symbol", "")).strip().upper()
-        if symbol and symbol in PORTS:
+        if symbol:
             result[symbol] = row
     return result
 
@@ -113,7 +97,7 @@ def _add_score(
     score: float,
     reason: str,
 ) -> None:
-    if symbol not in PORTS:
+    if not symbol:
         return
     state = scoreboard[symbol]
     state["symbol"] = symbol
@@ -131,8 +115,8 @@ def build_watch_pool(
     target_size = max(4, int(target_size))
     scoreboard: dict[str, dict[str, Any]] = defaultdict(lambda: {"symbol": "", "score": 0.0, "reasons": []})
     active_rows = _row_map(active_state)
-    current_selected = _symbol_list(active_state.get("selected", []))
-    current_watch = _symbol_list(active_state.get("watch_symbols", []))
+    current_selected = rotation_selected_symbols(active_state)
+    current_watch = rotation_watch_symbols(active_state, include_selected=False)
     recommendation = meta_report.get("recommendation") if isinstance(meta_report.get("recommendation"), dict) else {}
     strategy_actions = recommendation.get("strategy_actions") if isinstance(recommendation.get("strategy_actions"), dict) else {}
     strategy_weights = _weight_lookup(meta_report)
@@ -170,7 +154,7 @@ def build_watch_pool(
 
     for symbol, stats in symbol_breakdown.items():
         symbol_name = str(symbol).strip().upper()
-        if symbol_name not in PORTS or not isinstance(stats, dict):
+        if not symbol_name or not isinstance(stats, dict):
             continue
         trade_count = int(stats.get("trade_count") or 0)
         net_pnl = float(stats.get("net_pnl") or 0.0)
@@ -266,12 +250,12 @@ def build_watch_pool(
     watch_symbols: list[str] = []
     seen: set[str] = set()
     for symbol in current_selected:
-        if symbol not in seen and symbol in PORTS:
+        if symbol not in seen:
             watch_symbols.append(symbol)
             seen.add(symbol)
     for item in ranked:
         symbol = str(item["symbol"]).upper()
-        if symbol in seen or symbol not in PORTS:
+        if symbol in seen:
             continue
         watch_symbols.append(symbol)
         seen.add(symbol)
@@ -279,7 +263,12 @@ def build_watch_pool(
             break
 
     if len(watch_symbols) < target_size:
-        for symbol in sorted(PORTS):
+        fallback_symbols = current_watch + [
+            str(item.get("symbol", "")).upper()
+            for item in ranked
+            if str(item.get("symbol", "")).upper() not in current_watch
+        ]
+        for symbol in fallback_symbols:
             if symbol in seen:
                 continue
             watch_symbols.append(symbol)

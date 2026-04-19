@@ -130,6 +130,7 @@ def build_pipeline(
             ),
             exit_edge_bps=float(_cfg(cfg, "risk.exit_edge_bps", 0.0)),
             exit_bypass_gate_edge_bps=float(_cfg(cfg, "risk.exit_bypass_gate_edge_bps", 0.0)),
+            profit_only_auto_exits=bool(_cfg(cfg, "risk.profit_only_auto_exits", False)),
             min_hold_bars=int(_cfg(cfg, "risk.min_hold_bars", 0)),
             failed_start_exit_enabled=bool(_cfg(cfg, "risk.failed_start_exit_enabled", False)),
             failed_start_min_bars=int(_cfg(cfg, "risk.failed_start_min_bars", 0)),

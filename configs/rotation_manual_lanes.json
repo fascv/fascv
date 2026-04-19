@@ -1,6 +1,11 @@
 {
   "manual_entry_exit_only": false,
   "watch_symbols": [
-    "EUR"
+    "SIGN",
+    "WLFI"
+  ],
+  "manual_entry_exit_only_symbols": [
+    "SIGN",
+    "WLFI"
   ]
 }

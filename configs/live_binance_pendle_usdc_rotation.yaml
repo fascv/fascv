@@ -178,6 +178,7 @@ risk:
   max_entry_notional_to_depth_ratio: 1.0
   full_position_only: true
   require_break_even_for_exit: false
+  profit_only_auto_exits: true
   min_exit_profit_bps: 14.0
   hard_take_profit_bps: 0.0
   dynamic_profit_target_enabled: false
@@ -293,7 +294,7 @@ policy:
     staged_transition_smoothing_bars: 3
     staged_require_rising: true
     staged_profit_target_enabled: true
-    staged_profit_target_base_pct: 0.35
+    staged_profit_target_base_pct: 1.4
     staged_profit_target_min_pct: 0.3
     staged_profit_target_max_pct: 1.6
     staged_profit_target_mult_10: 1.25

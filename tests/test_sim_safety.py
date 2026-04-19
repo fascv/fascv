@@ -39,6 +39,125 @@ class TestSimSafety(unittest.TestCase):
         self.assertEqual(decision.target_position_btc, 0.0)
         self.assertEqual(decision.reason, "edge_exit")
 
+    def test_profit_only_auto_exits_hold_on_negative_edge(self) -> None:
+        cfg = RiskConfig(
+            max_exposure_eur=1000.0,
+            vol_target_bps=100.0,
+            daily_loss_limit_eur=1000.0,
+            max_drawdown_pct=50.0,
+            cooldown_bars=1,
+            allow_short=False,
+            profit_only_auto_exits=True,
+            use_vol_scaling=False,
+            use_gate_size_factor=False,
+        )
+        rm = RiskManager(cfg)
+        ts = datetime(2026, 2, 15, tzinfo=timezone.utc)
+        from trading.types import AccountState
+
+        state = AccountState(
+            ts=ts,
+            cash_eur=0.0,
+            position_btc=0.01,
+            avg_entry_price=50000.0,
+            realized_pnl_eur=0.0,
+            equity_eur=500.0,
+            peak_equity_eur=500.0,
+            drawdown_pct=0.0,
+            day_start_equity_eur=500.0,
+        )
+        features = Features(ts=ts, values={"price": 50000.0, "atr_bps": 10.0})
+        gate = GateDecision(ts=ts, allow=True, size_factor=1.0, reason=None)
+        decision = rm.decide(state, features, gate, predicted_edge_bps=-1.0)
+        self.assertTrue(decision.allow)
+        self.assertEqual(decision.target_position_btc, state.position_btc)
+        self.assertEqual(decision.reason, "hold_full_position")
+
+    def test_profit_only_auto_exits_disable_hard_stop_loss(self) -> None:
+        cfg = RiskConfig(
+            max_exposure_eur=1000.0,
+            vol_target_bps=100.0,
+            daily_loss_limit_eur=1000.0,
+            max_drawdown_pct=90.0,
+            cooldown_bars=1,
+            allow_short=False,
+            profit_only_auto_exits=True,
+            hard_stop_loss_bps=100.0,
+            use_vol_scaling=False,
+            use_gate_size_factor=False,
+        )
+        rm = RiskManager(cfg)
+        ts = datetime(2026, 2, 15, tzinfo=timezone.utc)
+        from trading.types import AccountState
+
+        state = AccountState(
+            ts=ts,
+            cash_eur=0.0,
+            position_btc=1.0,
+            avg_entry_price=100.0,
+            realized_pnl_eur=0.0,
+            equity_eur=98.5,
+            peak_equity_eur=100.0,
+            drawdown_pct=1.5,
+            day_start_equity_eur=100.0,
+        )
+        features = Features(ts=ts, values={"price": 98.5, "atr_bps": 10.0})
+        gate = GateDecision(ts=ts, allow=True, size_factor=1.0, reason=None)
+        decision = rm.decide(state, features, gate, predicted_edge_bps=4.0)
+        self.assertTrue(decision.allow)
+        self.assertEqual(decision.target_position_btc, state.position_btc)
+        self.assertEqual(decision.reason, "hold_full_position")
+
+    def test_profit_only_auto_exits_keep_profit_roll_exit(self) -> None:
+        cfg = RiskConfig(
+            max_exposure_eur=1000.0,
+            vol_target_bps=100.0,
+            daily_loss_limit_eur=1000.0,
+            max_drawdown_pct=90.0,
+            cooldown_bars=1,
+            allow_short=False,
+            profit_only_auto_exits=True,
+            profit_roll_exit_enabled=True,
+            profit_roll_arm_eur=0.5,
+            profit_roll_retrace_eur=0.1,
+            profit_roll_min_keep_profit_bps=0.0,
+            use_vol_scaling=False,
+            use_gate_size_factor=False,
+        )
+        rm = RiskManager(cfg)
+        ts = datetime(2026, 2, 15, tzinfo=timezone.utc)
+        from trading.types import AccountState
+
+        state = AccountState(
+            ts=ts,
+            cash_eur=0.0,
+            position_btc=1.0,
+            avg_entry_price=100.0,
+            realized_pnl_eur=0.0,
+            equity_eur=100.0,
+            peak_equity_eur=101.0,
+            drawdown_pct=0.0,
+            day_start_equity_eur=100.0,
+        )
+        gate = GateDecision(ts=ts, allow=True, size_factor=1.0, reason=None)
+
+        d1 = rm.decide(
+            state,
+            Features(ts=ts, values={"price": 101.0, "atr_bps": 10.0}),
+            gate,
+            predicted_edge_bps=5.0,
+        )
+        d2 = rm.decide(
+            state,
+            Features(ts=ts, values={"price": 100.85, "atr_bps": 10.0}),
+            gate,
+            predicted_edge_bps=5.0,
+        )
+
+        self.assertEqual(d1.reason, "hold_full_position")
+        self.assertEqual(d2.target_position_btc, 0.0)
+        self.assertEqual(d2.reason, "profit_roll_exit")
+
     def test_order_builder_clamps_buy_qty_includes_fee(self) -> None:
         ob = OrderBuilder(
             OrderConfig(

@@ -329,7 +329,9 @@ class TestCoreControls(unittest.TestCase):
         self.assertTrue(bool(exec_cmds[-1].payload.get("skip_emergency_exit")))
 
     def test_stop_with_skip_emergency_exit_does_not_enqueue_duplicate_exit(self):
-        ctx = self._make_ctx()
+        ctx = self._make_ctx(
+            risk_overrides={"exit_edge_bps": -9999.0, "exit_bypass_gate_edge_bps": -9999.0}
+        )
         thread = self._start_core(ctx)
         base_ts = datetime(2026, 1, 1, tzinfo=timezone.utc)
         try:
@@ -350,6 +352,8 @@ class TestCoreControls(unittest.TestCase):
                 )
             )
             self._push_market(ctx, self._event(base_ts, 100.0), settle_sec=0.12)
+            while not ctx.q_order_intent.empty():
+                ctx.q_order_intent.get_nowait()
 
             ctx.q_control_core.put(
                 ControlCommand(
@@ -364,6 +368,86 @@ class TestCoreControls(unittest.TestCase):
             self._stop_core(ctx, thread)
 
         self.assertEqual(ctx.q_order_intent.qsize(), 0)
+
+    def test_stop_without_skip_emergency_exit_still_does_not_flatten(self):
+        ctx = self._make_ctx(
+            risk_overrides={"exit_edge_bps": -9999.0, "exit_bypass_gate_edge_bps": -9999.0}
+        )
+        thread = self._start_core(ctx)
+        base_ts = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        try:
+            ctx.q_control_core.put(
+                ControlCommand(
+                    ts=base_ts,
+                    action="SYNC_ACCOUNT",
+                    reason="test_position",
+                    payload={
+                        "pair": "ETH/EUR",
+                        "base_asset": "ETH",
+                        "quote_asset": "EUR",
+                        "cash_eur": 10.0,
+                        "position_btc": 0.25,
+                        "avg_entry_price": 100.0,
+                        "reset": True,
+                    },
+                )
+            )
+            self._push_market(ctx, self._event(base_ts, 100.0), settle_sec=0.12)
+            while not ctx.q_order_intent.empty():
+                ctx.q_order_intent.get_nowait()
+
+            ctx.q_control_core.put(
+                ControlCommand(
+                    ts=base_ts + timedelta(seconds=1),
+                    action="STOP",
+                    reason="manual_stop",
+                )
+            )
+            self._push_market(ctx, self._event(base_ts + timedelta(seconds=1), 99.0), settle_sec=0.12)
+        finally:
+            self._stop_core(ctx, thread)
+
+        self.assertEqual(ctx.q_order_intent.qsize(), 0)
+
+    def test_flatten_still_enqueues_emergency_exit(self):
+        ctx = self._make_ctx(
+            risk_overrides={"exit_edge_bps": -9999.0, "exit_bypass_gate_edge_bps": -9999.0}
+        )
+        thread = self._start_core(ctx)
+        base_ts = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        try:
+            ctx.q_control_core.put(
+                ControlCommand(
+                    ts=base_ts,
+                    action="SYNC_ACCOUNT",
+                    reason="test_position",
+                    payload={
+                        "pair": "ETH/EUR",
+                        "base_asset": "ETH",
+                        "quote_asset": "EUR",
+                        "cash_eur": 10.0,
+                        "position_btc": 0.25,
+                        "avg_entry_price": 100.0,
+                        "reset": True,
+                    },
+                )
+            )
+            self._push_market(ctx, self._event(base_ts, 100.0), settle_sec=0.12)
+            while not ctx.q_order_intent.empty():
+                ctx.q_order_intent.get_nowait()
+
+            ctx.q_control_core.put(
+                ControlCommand(
+                    ts=base_ts + timedelta(seconds=1),
+                    action="FLATTEN",
+                    reason="manual_flatten",
+                )
+            )
+            self._push_market(ctx, self._event(base_ts + timedelta(seconds=1), 99.0), settle_sec=0.12)
+        finally:
+            self._stop_core(ctx, thread)
+
+        self.assertEqual(ctx.q_order_intent.qsize(), 1)
 
     def test_sync_account_reset_reanchors_daily_loss_reference_after_pre_sync_tick(self):
         ctx = self._make_ctx(

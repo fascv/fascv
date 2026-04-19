@@ -3,6 +3,8 @@ from datetime import UTC, datetime
 import pytest
 import yaml
 
+pytest.importorskip("fastapi")
+
 from btc_news_arrow.api import _llm_http_exception, _llm_max_db_id, _resolve_llm_result, create_app
 from btc_news_arrow.models import ArrowResult, NewsItem
 

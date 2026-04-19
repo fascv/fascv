@@ -54,6 +54,10 @@ class RiskConfig:
     # Minimum negative edge required to bypass gate and force a flattening long exit.
     # Example: -20.0 means bypass exits only when edge is <= -20 bps.
     exit_bypass_gate_edge_bps: float = 0.0
+    # If True, automatic exits may only happen when the trade is already in profit.
+    # Loss/safety exits stay disabled; position changes then come only from profit exits,
+    # manual actions, or account sync.
+    profit_only_auto_exits: bool = False
     # Keep a position for at least N bars before evaluating regular exit signals.
     min_hold_bars: int = 0
     # Enable a dedicated early-failure exit shortly after entry when the expected rebound
@@ -439,6 +443,7 @@ class RiskManager:
         )
         exit_edge_bps = float(getattr(self.config, "exit_edge_bps", 0.0))
         exit_bypass_gate_edge_bps = float(getattr(self.config, "exit_bypass_gate_edge_bps", 0.0))
+        profit_only_auto_exits = bool(getattr(self.config, "profit_only_auto_exits", False))
         min_hold_bars = max(0, int(getattr(self.config, "min_hold_bars", 0)))
         failed_start_exit_enabled = bool(getattr(self.config, "failed_start_exit_enabled", False))
         failed_start_max_bars = max(0, int(getattr(self.config, "failed_start_max_bars", 0)))
@@ -584,6 +589,19 @@ class RiskManager:
             0.0,
             float(getattr(self.config, "max_entry_notional_to_depth_ratio", 0.0)),
         )
+        if profit_only_auto_exits:
+            # Keep profit-taking exits, but block all loss/safety-style auto-flattens.
+            exit_edge_bps = float("-inf")
+            exit_bypass_gate_edge_bps = float("-inf")
+            failed_start_exit_enabled = False
+            chop_break_even_reclaim_enabled = False
+            require_break_even_for_exit = True
+            hard_stop_loss_bps = 0.0
+            trailing_stop_enabled = False
+            allow_reversal_exit_after_break_even = False
+            time_break_even_floor_enabled = False
+            red_candle_exit_enabled = False
+            full_position_only = True
         regime_norm = str(regime or "").strip().lower()
         corridor_mode_enabled = float(features.values.get("corridor_staged_mode_enabled", 0.0) or 0.0) >= 0.5
 

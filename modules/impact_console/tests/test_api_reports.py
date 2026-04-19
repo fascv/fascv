@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 import yaml
+
+pytest.importorskip("fastapi")
+
 from fastapi.testclient import TestClient
 
 from btc_news_arrow.api import create_app

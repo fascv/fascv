@@ -2,6 +2,8 @@ from datetime import UTC, datetime
 
 import pytest
 
+pytest.importorskip("fastapi")
+
 from btc_news_arrow.api import (
     _clip_component_score,
     _combine_weighted_scores,

@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
 import yaml
+
+pytest.importorskip("fastapi")
+
 from fastapi.testclient import TestClient
 
 from btc_news_arrow.api import create_app

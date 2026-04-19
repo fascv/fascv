@@ -1,5 +1,9 @@
 from datetime import UTC, datetime
 
+import pytest
+
+pytest.importorskip("fastapi")
+
 from btc_news_arrow.api import _regime_from_score, _select_reasons
 from btc_news_arrow.models import NewsItem
 

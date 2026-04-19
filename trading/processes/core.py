@@ -716,9 +716,8 @@ def _restore_risk_flat_reentry_state_from_journal(
 
 def _queue_propagated_disable_commands(ctx: ProcessContext, ts: datetime, reason: str) -> None:
     for q in (ctx.q_control_core, ctx.q_control_exec):
-        # Queue CANCEL_ALL ahead of STOP. The exec loop processes at most one control
-        # command before it starts draining intents, so STOP->emergency_exit->CANCEL_ALL
-        # can cancel the just-submitted emergency exit on the next iteration.
+        # Queue CANCEL_ALL ahead of STOP so open intents/orders are cleared before the
+        # runtime settles into a disabled state. STOP itself must never synthesize a sell.
         try_put(q, ControlCommand(ts=ts, action="CANCEL_ALL", reason=reason))
         try_put(
             q,
@@ -879,6 +878,7 @@ def _build_components(cfg: Dict[str, Any]) -> tuple[FeatureEngine, AlphaModel, C
             ),
             exit_edge_bps=float(_cfg(cfg, "risk.exit_edge_bps", 0.0)),
             exit_bypass_gate_edge_bps=float(_cfg(cfg, "risk.exit_bypass_gate_edge_bps", 0.0)),
+            profit_only_auto_exits=bool(_cfg(cfg, "risk.profit_only_auto_exits", False)),
             min_hold_bars=int(_cfg(cfg, "risk.min_hold_bars", 0)),
             failed_start_exit_enabled=bool(_cfg(cfg, "risk.failed_start_exit_enabled", False)),
             failed_start_min_bars=int(_cfg(cfg, "risk.failed_start_min_bars", 0)),
@@ -1540,9 +1540,6 @@ def run_core(ctx: ProcessContext) -> None:
         _send_journal(ctx, "core_trading_disabled", {"reason": reason, "propagated": propagate})
         if not propagate:
             return
-        # On severe loss/drawdown stops, close positions first and then STOP/CANCEL_ALL.
-        if reason in {"daily_loss_limit", "max_drawdown"}:
-            _emit_emergency_exit(reason)
         stop_ts = datetime.now(timezone.utc)
         _queue_propagated_disable_commands(ctx, stop_ts, reason)
 
@@ -2120,10 +2117,7 @@ def run_core(ctx: ProcessContext) -> None:
                 saw_disable = True
                 disable_reason = cmd_reason or "flatten"
             elif cmd.action == "STOP":
-                # A manual/global stop should not leave live inventory behind.
-                payload = cmd.payload if isinstance(cmd.payload, dict) else {}
-                if not bool(payload.get("skip_emergency_exit", False)):
-                    _emit_emergency_exit(cmd_reason or "stop")
+                # STOP only disables new trading. Manual flattening remains a separate action.
                 saw_disable = True
                 disable_reason = cmd_reason
             elif cmd.action in {"START", "RESUME"}:
@@ -2231,6 +2225,7 @@ def run_core(ctx: ProcessContext) -> None:
                         ),
                         exit_edge_bps=getattr(rcfg, "exit_edge_bps", 0.0),
                         exit_bypass_gate_edge_bps=getattr(rcfg, "exit_bypass_gate_edge_bps", 0.0),
+                        profit_only_auto_exits=getattr(rcfg, "profit_only_auto_exits", False),
                         min_hold_bars=getattr(rcfg, "min_hold_bars", 0),
                         failed_start_exit_enabled=getattr(rcfg, "failed_start_exit_enabled", False),
                         failed_start_min_bars=getattr(rcfg, "failed_start_min_bars", 0),

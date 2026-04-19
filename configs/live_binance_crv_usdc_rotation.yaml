@@ -133,7 +133,7 @@ alpha:
 risk:
   max_exposure_eur: 20.0
   max_exposure_mode: equity
-  max_exposure_fraction: 0.0
+  max_exposure_fraction: 0.125
   vol_target_bps: 180.0
   daily_loss_limit_eur: 100000.0
   max_drawdown_pct: 100000.0
@@ -178,6 +178,7 @@ risk:
   max_entry_notional_to_depth_ratio: 1.0
   full_position_only: true
   require_break_even_for_exit: false
+  profit_only_auto_exits: true
   min_exit_profit_bps: 14.0
   hard_take_profit_bps: 0.0
   dynamic_profit_target_enabled: false
@@ -234,7 +235,7 @@ order:
   min_trade_btc: 3.0
   slice_count: 1
   cycle_trade_mode: equity
-  cycle_trade_fraction: 0.0
+  cycle_trade_fraction: 0.125
   cycle_trade_eur: 20.0
 execution:
   latency_bars: 0
@@ -293,7 +294,7 @@ policy:
     staged_transition_smoothing_bars: 3
     staged_require_rising: true
     staged_profit_target_enabled: true
-    staged_profit_target_base_pct: 0.35
+    staged_profit_target_base_pct: 1.4
     staged_profit_target_min_pct: 0.3
     staged_profit_target_max_pct: 1.6
     staged_profit_target_mult_10: 1.25

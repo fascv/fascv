@@ -446,6 +446,17 @@ def mirror_path_for_symbol(symbol: str, mirror_dir: Path | None = None) -> Path:
     return (mirror_dir or default_mirror_dir()) / f"{normalized_symbol}.jsonl"
 
 
+def _row_time_ms(row: dict[str, Any]) -> int:
+    try:
+        time_ms = int(row.get("timeMs") or 0)
+    except Exception:
+        time_ms = 0
+    if time_ms > 0:
+        return time_ms
+    trade_dt = parse_iso_utc(str(row.get("timeIso") or ""))
+    return int(trade_dt.timestamp() * 1000)
+
+
 def load_mirror_rows(symbol: str, mirror_dir: Path | None = None) -> list[dict[str, Any]]:
     path = mirror_path_for_symbol(symbol, mirror_dir)
     if not path.is_file():
@@ -543,10 +554,12 @@ def collect_trades_mirror(
         _, quote_coin = split_symbol(symbol)
         for row in load_mirror_rows(symbol, mirror_dir):
             try:
-                trade_dt = parse_iso_utc(str(row.get("timeIso") or ""))
+                time_ms = _row_time_ms(row)
             except Exception:
                 continue
-            if not (trade_dt < to_dt):
+            if time_ms <= 0:
+                continue
+            if not (time_ms < int(to_dt.timestamp() * 1000)):
                 continue
             qty = float(row.get("quantity") or 0.0)
             if qty <= EPS:
@@ -573,8 +586,8 @@ def collect_trades_mirror(
                     "side": side,
                     "orderId": str(row.get("orderId") or ""),
                     "tradeId": str(row.get("tradeId") or ""),
-                    "timeMs": int(row.get("timeMs") or 0),
-                    "timeIso": str(row.get("timeIso") or ""),
+                    "timeMs": time_ms,
+                    "timeIso": iso_from_ms(time_ms),
                     "quantity": qty,
                     "grossUsdc": gross_usdc,
                 }

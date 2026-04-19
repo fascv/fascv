@@ -50,6 +50,40 @@ class TestRotationWatchPoolRefresh(unittest.TestCase):
         self.assertIn("CHZ", watch_symbols)
         self.assertIn("ENA", watch_symbols)
 
+    def test_exit_only_watch_symbol_is_not_dropped_from_current_watch_scope(self) -> None:
+        active_state = {
+            "selected": [],
+            "watch_symbols": ["SIGN", "AAVE"],
+            "all_rows": [
+                {
+                    "symbol": "AAVE",
+                    "keep_open": False,
+                    "eligible": True,
+                    "gate_reason": "",
+                    "recent_live_selection_block": False,
+                },
+            ],
+        }
+        universe_report = {
+            "top_candidates": [{"symbol": "AAVE", "bucket": "keep"}],
+            "recommended_pool": ["AAVE"],
+            "strategy_rankings": {
+                "rebound": [{"symbol": "AAVE", "bucket": "keep"}],
+            },
+        }
+        meta_report = {}
+
+        watch_symbols, scored = build_watch_pool(
+            active_state=active_state,
+            universe_report=universe_report,
+            meta_report=meta_report,
+            target_size=4,
+        )
+
+        self.assertIn("SIGN", scored)
+        self.assertIn("SIGN", watch_symbols)
+        self.assertIn("AAVE", watch_symbols)
+
 
 if __name__ == "__main__":
     unittest.main()

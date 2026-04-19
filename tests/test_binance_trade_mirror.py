@@ -170,6 +170,45 @@ class TestBinanceTradeMirror(unittest.TestCase):
         self.assertAlmostEqual(report["daySummary"]["sellGrossUsdc"], 20.18, places=9)
         self.assertAlmostEqual(report["daySummary"]["proceedsUsdc"], 0.18, places=9)
 
+    def test_collect_trades_mirror_prefers_time_ms_over_stale_time_iso(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            mirror_dir = Path(tmp)
+            rows = [
+                {
+                    "symbol": "RENDERUSDC",
+                    "coin": "RENDER",
+                    "side": "BUY",
+                    "orderId": "1",
+                    "tradeId": "11",
+                    "timeMs": 1773619201000,
+                    "timeIso": "2026-03-15T00:00:01Z",
+                    "quantity": 1.0,
+                    "grossUsdc": 1.01,
+                },
+                {
+                    "symbol": "RENDERUSDC",
+                    "coin": "RENDER",
+                    "side": "SELL",
+                    "orderId": "2",
+                    "tradeId": "12",
+                    "timeMs": 1773619202000,
+                    "timeIso": "2026-03-15T00:00:02Z",
+                    "quantity": 1.0,
+                    "grossUsdc": 1.20,
+                },
+            ]
+            trade_mirror.write_mirror_rows("RENDERUSDC", rows, mirror_dir)
+            report = trade_mirror.collect_trades_mirror(
+                "2026-03-16T00:00:00Z",
+                "2026-03-16T01:00:00Z",
+                ["RENDERUSDC"],
+                mirror_dir=mirror_dir,
+            )
+
+        self.assertEqual(report["fillEvents"], 2)
+        self.assertEqual(report["daySummary"]["bundleCount"], 1)
+        self.assertAlmostEqual(report["daySummary"]["proceedsUsdc"], 0.19, places=9)
+
     def test_sync_symbol_window_merges_and_dedupes_trade_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             mirror_dir = Path(tmp)
