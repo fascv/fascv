@@ -24,11 +24,11 @@ from trading.rotation_strategy_runtime import (
     normalize_symbol_strategy_map,
 )
 from trading.binance.rest import BinanceRestClient
-from trading.rotation_universe import POOL, build_lanes
+from trading.rotation_universe import LANE_POOL, POOL, build_lanes
 
 ACTIVE_FILE = REPO_ROOT / "configs" / "rotation_active_lanes.json"
 MANUAL_LANES_FILE = REPO_ROOT / "configs" / "rotation_manual_lanes.json"
-LANES = build_lanes(POOL)
+LANES = build_lanes(LANE_POOL)
 RUNTIME_CONFIG_DIR = REPO_ROOT / "logs" / "rotation_runtime_configs"
 FALLBACK_TEMPLATE_SYMBOL = "XLM"
 PROC_ROOT = Path("/proc")
@@ -46,6 +46,49 @@ try:
     )
 except ValueError:
     INVENTORY_PROTECT_MIN_NOTIONAL_EUR = 1.0
+
+
+def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
+    try:
+        value = int(str(os.getenv(name, str(default))).strip())
+    except Exception:
+        value = int(default)
+    return max(int(minimum), value)
+
+
+def _env_float(name: str, default: float, *, minimum: float = 0.0) -> float:
+    try:
+        value = float(str(os.getenv(name, str(default))).strip())
+    except Exception:
+        value = float(default)
+    return max(float(minimum), value)
+
+
+WATCHDOG_MIN_HEARTBEAT_TIMEOUT_SEC = _env_float(
+    "ROTATION_LANE_MIN_HEARTBEAT_TIMEOUT_SEC",
+    45.0,
+    minimum=5.0,
+)
+WATCHDOG_MIN_STARTUP_GRACE_SEC = _env_float(
+    "ROTATION_LANE_MIN_STARTUP_GRACE_SEC",
+    180.0,
+    minimum=15.0,
+)
+IPC_MAX_JOURNAL_QUEUE_SIZE = _env_int(
+    "ROTATION_LANE_MAX_JOURNAL_QUEUE_SIZE",
+    600,
+    minimum=50,
+)
+IPC_MAX_TELEMETRY_QUEUE_SIZE = _env_int(
+    "ROTATION_LANE_MAX_TELEMETRY_QUEUE_SIZE",
+    120,
+    minimum=20,
+)
+IPC_MAX_HEARTBEAT_QUEUE_SIZE = _env_int(
+    "ROTATION_LANE_MAX_HEARTBEAT_QUEUE_SIZE",
+    64,
+    minimum=8,
+)
 
 
 def _lane_base_config_path(symbol: str) -> Path:
@@ -175,6 +218,7 @@ def _render_lane_runtime_config(
     *,
     manual_entry_exit_only: bool = False,
     fixed_notional_eur: float | None = None,
+    exec_enabled: bool = True,
 ) -> tuple[str, str]:
     base_config_path = _ensure_lane_base_config(symbol)
     runtime_config_path = _lane_runtime_config_path(symbol)
@@ -192,28 +236,45 @@ def _render_lane_runtime_config(
         if isinstance(order, dict):
             order["cycle_trade_mode"] = "fixed"
             order["cycle_trade_eur"] = fixed_notional
+    exec_cfg = runtime_cfg.setdefault("exec", {})
+    if isinstance(exec_cfg, dict):
+        exec_cfg["enabled"] = bool(exec_enabled)
     runtime = runtime_cfg.setdefault("runtime", {})
     runtime["base_config_path"] = str(base_config_path)
     runtime["generated_config_path"] = str(runtime_config_path)
     runtime["rotation_strategy_source"] = str(strategy_source or "base_config")
     runtime["manual_entry_exit_only"] = bool(manual_entry_exit_only)
 
-    # Rotation lanes can be quiet for short periods. A 5s watchdog window causes
-    # false heartbeat_stale shutdown loops on low-activity symbols.
+    # Rotation lanes can be quiet for longer periods under high system load.
+    # Raise watchdog floors and cap IPC queue sizes to reduce restart storms
+    # and memory pressure when many lanes run in parallel.
     ipc = runtime_cfg.setdefault("ipc", {})
     if isinstance(ipc, dict):
         try:
             heartbeat_timeout = float(ipc.get("heartbeat_timeout", 0.0) or 0.0)
         except Exception:
             heartbeat_timeout = 0.0
-        if heartbeat_timeout < 12.0:
-            ipc["heartbeat_timeout"] = 12.0
+        if heartbeat_timeout < WATCHDOG_MIN_HEARTBEAT_TIMEOUT_SEC:
+            ipc["heartbeat_timeout"] = WATCHDOG_MIN_HEARTBEAT_TIMEOUT_SEC
         try:
             startup_grace = float(ipc.get("startup_grace_sec", 0.0) or 0.0)
         except Exception:
             startup_grace = 0.0
-        if startup_grace < 45.0:
-            ipc["startup_grace_sec"] = 45.0
+        if startup_grace < WATCHDOG_MIN_STARTUP_GRACE_SEC:
+            ipc["startup_grace_sec"] = WATCHDOG_MIN_STARTUP_GRACE_SEC
+
+        queue_caps = {
+            "journal_queue_size": IPC_MAX_JOURNAL_QUEUE_SIZE,
+            "telemetry_queue_size": IPC_MAX_TELEMETRY_QUEUE_SIZE,
+            "heartbeat_queue_size": IPC_MAX_HEARTBEAT_QUEUE_SIZE,
+        }
+        for key, cap in queue_caps.items():
+            try:
+                current = int(float(ipc.get(key, cap) or cap))
+            except Exception:
+                current = int(cap)
+            if current <= 0 or current > cap:
+                ipc[key] = int(cap)
     rendered = yaml.safe_dump(runtime_cfg, sort_keys=False)
     return alpha_type, rendered
 
@@ -225,6 +286,7 @@ def _write_lane_runtime_config(
     *,
     manual_entry_exit_only: bool = False,
     fixed_notional_eur: float | None = None,
+    exec_enabled: bool = True,
 ) -> tuple[str, bool]:
     runtime_config_path = _lane_runtime_config_path(symbol)
     alpha_type, rendered = _render_lane_runtime_config(
@@ -233,6 +295,7 @@ def _write_lane_runtime_config(
         strategy_source,
         manual_entry_exit_only=manual_entry_exit_only,
         fixed_notional_eur=fixed_notional_eur,
+        exec_enabled=exec_enabled,
     )
     previous = ""
     try:
@@ -267,6 +330,29 @@ def _manual_entry_exit_only_from_rendered(rendered: str) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on", "y"}
     return False
+
+
+def _exec_enabled_from_rendered(rendered: str) -> bool:
+    text = str(rendered or "").strip()
+    if not text:
+        return True
+    try:
+        payload = yaml.safe_load(text)
+    except Exception:
+        return True
+    if not isinstance(payload, dict):
+        return True
+    exec_cfg = payload.get("exec")
+    if not isinstance(exec_cfg, dict):
+        return True
+    value = exec_cfg.get("enabled")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "y"}
+    return True
 
 
 def _load_lane_runtime_metadata(symbol: str) -> tuple[str, str]:
@@ -1220,6 +1306,17 @@ def _pause_lane(symbol: str) -> None:
     _wait_lane_trading_enabled(control_port, enabled=False, timeout=4.0)
 
 
+def _cleanup_orphans_all_lanes() -> list[dict[str, object]]:
+    cleanup: list[dict[str, object]] = []
+    for symbol in sorted(LANES):
+        unit_service = _lane_unit_name(symbol)
+        unit_main_pid = _unit_main_pid(unit_service)
+        removed = _cleanup_lane_orphan_processes(symbol, preserve_root_pid=unit_main_pid)
+        if removed:
+            cleanup.append({"symbol": symbol, "killed_pids": removed})
+    return cleanup
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Apply the active/watch rotation state to lane services")
     ap.add_argument(
@@ -1227,7 +1324,26 @@ def main() -> None:
         action="store_true",
         help="Reload already running watch lanes before applying active/watch state",
     )
+    ap.add_argument(
+        "--cleanup-orphans-only",
+        action="store_true",
+        help="Only clean orphan lane processes and exit",
+    )
     args = ap.parse_args()
+
+    if args.cleanup_orphans_only:
+        cleanup = _cleanup_orphans_all_lanes()
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "mode": "cleanup_orphans_only",
+                    "orphan_process_cleanup": cleanup,
+                },
+                ensure_ascii=True,
+            )
+        )
+        return
 
     if not ACTIVE_FILE.exists():
         raise SystemExit("missing configs/rotation_active_lanes.json")
@@ -1277,8 +1393,10 @@ def main() -> None:
     runtime_config_changed: dict[str, bool] = {}
     runtime_budget_overrides: list[dict[str, float]] = []
     manual_entry_exit_only_by_symbol: dict[str, bool] = {}
+    exec_enabled_by_symbol: dict[str, bool] = {}
     deferred_runtime_updates: list[dict[str, str]] = []
     deferred_runtime_symbols: set[str] = set()
+    restart_required_symbols: set[str] = set()
     deferred_watch_only_symbols: list[dict[str, str]] = []
     for symbol in watch_symbols:
         # Non-selected lanes must never re-enter automatically; keep them exit-only.
@@ -1299,16 +1417,25 @@ def main() -> None:
             if symbol in selected_set
             else 0.0
         )
+        control_port = LANES[symbol]["ports"][0]
+        lane_running = _http_ok(control_port, timeout=0.5)
+        snap = _lane_snapshot(symbol, control_port) if lane_running else None
+        has_inventory = _lane_has_position_inventory(snap) if isinstance(snap, dict) else False
+        exec_enabled = bool(
+            symbol in selected_set
+            or symbol in manual_watch_set
+            or symbol in manual_entry_exit_only_symbols
+            or has_inventory
+        )
+        exec_enabled_by_symbol[symbol] = exec_enabled
         alpha_type, desired_rendered = _render_lane_runtime_config(
             symbol,
             strategy_name,
             strategy_source,
             manual_entry_exit_only=manual_entry_exit_only,
             fixed_notional_eur=fixed_notional,
+            exec_enabled=exec_enabled,
         )
-        control_port = LANES[symbol]["ports"][0]
-        lane_running = _http_ok(control_port, timeout=0.5)
-        snap = _lane_snapshot(symbol, control_port) if lane_running else None
         runtime_config_path = _lane_runtime_config_path(symbol)
         try:
             current_rendered = runtime_config_path.read_text(encoding="utf-8")
@@ -1318,10 +1445,17 @@ def main() -> None:
             _manual_entry_exit_only_from_rendered(current_rendered)
             != _manual_entry_exit_only_from_rendered(desired_rendered)
         )
+        exec_flag_changed = (
+            _exec_enabled_from_rendered(current_rendered)
+            != _exec_enabled_from_rendered(desired_rendered)
+        )
+        if exec_flag_changed:
+            restart_required_symbols.add(symbol)
         if (
             lane_running
             and _should_defer_runtime_update(snap, current_rendered, desired_rendered)
             and not manual_flag_changed
+            and not exec_flag_changed
         ):
             live_strategy, live_alpha = _load_lane_runtime_metadata(symbol)
             deferred_runtime_symbols.add(symbol)
@@ -1344,6 +1478,7 @@ def main() -> None:
             strategy_source,
             manual_entry_exit_only=manual_entry_exit_only,
             fixed_notional_eur=fixed_notional,
+            exec_enabled=exec_enabled,
         )
         if symbol in selected_set and fixed_notional > 0.0 and changed:
             runtime_budget_overrides.append({"symbol": symbol, "notional_eur": fixed_notional})
@@ -1401,10 +1536,12 @@ def main() -> None:
                 unit_main_pid = _unit_main_pid(unit_service)
                 if unit_main_pid > 0:
                     removed = _cleanup_lane_orphan_processes(symbol, preserve_root_pid=unit_main_pid)
-                    if removed:
-                        orphan_cleanup.append({"symbol": symbol, "killed_pids": removed})
+                if removed:
+                    orphan_cleanup.append({"symbol": symbol, "killed_pids": removed})
                 continue
-            if args.reload_running or runtime_config_changed.get(symbol, False):
+            if symbol in restart_required_symbols:
+                _restart_lane_runtime(symbol)
+            elif args.reload_running or runtime_config_changed.get(symbol, False):
                 _reload_lane(symbol)
             unit_main_pid = _unit_main_pid(unit_service)
             if unit_main_pid > 0:
@@ -1461,6 +1598,9 @@ def main() -> None:
                 "manual_entry_exit_only_global": manual_entry_exit_only_global,
                 "manual_entry_exit_only_symbols": sorted(
                     symbol for symbol, enabled in manual_entry_exit_only_by_symbol.items() if enabled
+                ),
+                "exec_disabled_watch_symbols": sorted(
+                    symbol for symbol, enabled in exec_enabled_by_symbol.items() if not enabled
                 ),
                 "runtime_config_version": ROTATION_RUNTIME_CONFIG_VERSION,
                 "selected_alpha_map": {

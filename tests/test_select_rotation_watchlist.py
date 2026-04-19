@@ -330,6 +330,35 @@ class TestSelectRotationWatchlist(unittest.TestCase):
         self.assertTrue(metrics["data_ok"])
         self.assertFalse(metrics["blocked"])
 
+    def test_listing_decay_profile_block_requires_all_three_conditions(self) -> None:
+        listing_metrics = {
+            "data_ok": True,
+            "history_days": 180.0,
+            "ret_since_listing_pct": -55.0,
+            "drawdown_from_listing_high_pct": -72.0,
+            "share_days_below_listing_start_pct": 91.0,
+        }
+        blocked, reason = select_rotation_watchlist._listing_decay_profile_block(
+            listing_metrics,
+            min_history_days=120.0,
+            min_drop_from_start_pct=40.0,
+            min_drawdown_from_high_pct=60.0,
+            min_share_below_start_pct=85.0,
+        )
+        self.assertTrue(blocked)
+        self.assertEqual(reason, "listing_structural_decay_profile")
+
+        listing_metrics["share_days_below_listing_start_pct"] = 70.0
+        blocked, reason = select_rotation_watchlist._listing_decay_profile_block(
+            listing_metrics,
+            min_history_days=120.0,
+            min_drop_from_start_pct=40.0,
+            min_drawdown_from_high_pct=60.0,
+            min_share_below_start_pct=85.0,
+        )
+        self.assertFalse(blocked)
+        self.assertEqual(reason, "")
+
     def test_non_falling_longtrend_block_blocks_downward_metrics(self) -> None:
         blocked, reason = _non_falling_longtrend_block(
             {
@@ -439,6 +468,51 @@ class TestSelectRotationWatchlist(unittest.TestCase):
         self.assertNotIn("GOOD", entries)
         self.assertFalse(info["refresh_ok"])
         self.assertIn("BAD", info["refresh_failed_symbols"])
+
+    def test_build_auto_blacklist_blocks_listing_decay_profile_when_level_off(self) -> None:
+        btc_macro_closes = [100.0 + (0.2 * idx) for idx in range(240)]
+
+        def _fake_get_klines(market: str, **kwargs: object) -> list[list[object]]:
+            if market == "BADUSDC":
+                return self._build_klines(start=100.0, step=-0.35, count=260, quote_volume=450.0)
+            return self._build_klines(start=100.0, step=0.08, count=260, quote_volume=450.0)
+
+        with (
+            patch.dict(
+                select_rotation_watchlist.os.environ,
+                {
+                    "ROTATION_AUTO_BLACKLIST_ENABLED": "1",
+                    "ROTATION_AUTO_BLACKLIST_DOWNTREND_LEVEL": "off",
+                    "ROTATION_AUTO_BLACKLIST_FORCE_REFRESH": "1",
+                    "ROTATION_AUTO_BLACKLIST_USE_LISTING_STRUCTURAL_BLOCK": "0",
+                    "ROTATION_AUTO_BLACKLIST_LISTING_DECAY_PROFILE_ENABLED": "1",
+                    "ROTATION_AUTO_BLACKLIST_LISTING_DECAY_MIN_HISTORY_DAYS": "120",
+                    "ROTATION_AUTO_BLACKLIST_LISTING_DECAY_MIN_DROP_FROM_START_PCT": "40",
+                    "ROTATION_AUTO_BLACKLIST_LISTING_DECAY_MIN_DRAWDOWN_FROM_HIGH_PCT": "60",
+                    "ROTATION_AUTO_BLACKLIST_LISTING_DECAY_MIN_SHARE_BELOW_START_PCT": "85",
+                },
+                clear=False,
+            ),
+            patch.object(select_rotation_watchlist, "_load_auto_blacklist_cache", return_value={}),
+            patch.object(select_rotation_watchlist, "_save_auto_blacklist_cache"),
+            patch.object(select_rotation_watchlist, "_get_klines", side_effect=_fake_get_klines),
+            patch.object(
+                select_rotation_watchlist,
+                "_persistent_downdrift_metrics",
+                return_value={"enabled": False, "data_ok": False, "blocked": False},
+            ),
+        ):
+            entries, info = select_rotation_watchlist._build_auto_blacklist(
+                quote_asset="USDC",
+                scan_symbols=["BAD", "GOOD"],
+                btc_macro_closes=btc_macro_closes,
+            )
+
+        self.assertTrue(info["enabled"])
+        self.assertIn("BAD", entries)
+        self.assertEqual(entries["BAD"]["reason"], "listing_structural_decay_profile")
+        self.assertTrue(bool(entries["BAD"]["listing_decay_profile_blocked"]))
+        self.assertNotIn("GOOD", entries)
 
     def test_contract_prefilter_blocks_nondefault_risk_when_default_unknown(self) -> None:
         scans = [

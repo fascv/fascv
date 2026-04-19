@@ -242,7 +242,7 @@ execution:
   slippage_bps: 1.0
 md:
   exchange: binance
-  pair: ZK/USDC
+  pair: TAO/USDC
   ws_url: wss://stream.binance.com:9443
   stale_seconds: 180
   stale_book_seconds: 180
@@ -257,9 +257,9 @@ core:
   rate_limit_pause_sec: 2.0
   warmup:
     enabled: true
-    window_hours: 336.0
+    window_hours: 168.0
     min_bars: 720
-    max_bars: 20160
+    max_bars: 10080
     use_journal_db: true
     use_journal_json: true
     rest_backfill: true
@@ -267,12 +267,16 @@ core:
 policy:
   profit_corridor:
     enabled: true
-    window_bars: 20160
+    window_bars: 10080
     min_bars: 720
     max_entry_position_pct: 0.0
+    short_horizon_entry_guard_enabled: true
+    short_horizon_entry_window_bars: 1440
+    short_horizon_entry_min_bars: 720
+    short_horizon_no_buy_above_pct: 55.0
     fast_window_bars: 1440
     fast_min_bars: 240
-    fast_blend_weight: 0.35
+    fast_blend_weight: 0.0
     robust_range_enabled: true
     robust_low_pct: 2.0
     robust_high_pct: 98.0
@@ -299,7 +303,7 @@ policy:
     staged_profit_target_mult_50: 0.8
 exec:
   exchange: binance
-  pair: ZK/USDC
+  pair: TAO/USDC
   rate_limit_per_sec: 5.0
   reconcile_interval_sec: 10.0
   canary_mode: false
@@ -318,8 +322,8 @@ exec:
   min_entry_notional_eur: 6.0
   sell_balance_buffer_btc: 0.0
 journal:
-  db_path: logs/journal_live_binance_zk_usdc_rotation.db
-  json_path: logs/journal_live_binance_zk_usdc_rotation.jsonl
+  db_path: logs/journal_live_binance_tao_usdc_rotation.db
+  json_path: logs/journal_live_binance_tao_usdc_rotation.jsonl
 ipc:
   market_queue_size: 1
   impact_queue_size: 1
@@ -332,10 +336,10 @@ ipc:
 impact:
   enabled: false
   source: api
-  symbol: ZK/USDC
+  symbol: TAO/USDC
   interval_seconds: 300
   timeout_seconds: 3
-  api_url: http://127.0.0.1:8331/signal/multi-asset-probability?target=ZK&lookback=72h
+  api_url: http://127.0.0.1:8331/signal/multi-asset-probability?target=TAO&lookback=72h
   file_path: modules/impact_console/diagnostics/arrow_1h.json
   fallback_to_file: false
 news:
@@ -353,7 +357,7 @@ control:
   stale_warn_sec: 12
 live:
   exchange: binance
-  symbol: ZK/USDC
+  symbol: TAO/USDC
   api_key: ${BINANCE_API_KEY}
   api_secret: ${BINANCE_API_SECRET}
   rate_limit_per_sec: 5.0

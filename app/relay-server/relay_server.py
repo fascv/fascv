@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import socket
+import statistics
 import subprocess
 import sys
 import threading
@@ -79,6 +80,20 @@ CORE_ROTATION_STRATEGIES = {"staircase", "continuation", "breakout", "rebound"}
 _SYMBOL_CACHE: list[str] = []
 _SYMBOL_CACHE_AT: float = 0.0
 _SYMBOL_CACHE_TTL_SEC = 300.0
+_PRODUCT_TAG_CACHE: dict[str, set[str]] = {}
+_PRODUCT_TAG_CACHE_AT: float = 0.0
+_PRODUCT_TAG_CACHE_TTL_SEC = max(
+    60.0,
+    float(os.getenv("RELAY_PRODUCT_TAG_CACHE_TTL_SEC", "1800")),
+)
+_OG_SIMILAR_CACHE: dict[str, Any] | None = None
+_OG_SIMILAR_CACHE_AT: float = 0.0
+_OG_SIMILAR_CACHE_LOCK = threading.Lock()
+_OG_SIMILAR_REFRESH_LOCK = threading.Lock()
+_ZRO_STYLE_CACHE: dict[str, Any] | None = None
+_ZRO_STYLE_CACHE_AT: float = 0.0
+_ZRO_STYLE_CACHE_LOCK = threading.Lock()
+_ZRO_STYLE_REFRESH_LOCK = threading.Lock()
 _REPORT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _MY_TRADES_LOCK = threading.Lock()
 _MY_TRADES_NEXT_TS = 0.0
@@ -89,6 +104,79 @@ EPS = 1e-12
 POINT3_GATE_REASONS = {"spread", "depth", "volume"}
 POINT1_GATE_REASONS = {"slope_profile_mismatch"}
 POINT2_GATE_REASONS = {"rebound_in_downtrend", "structure_downtrend"}
+NON_BUY_REASON_TEXT: dict[str, str] = {
+    "atr_below_entry_costs": "Bewegung zu schwach fuer die Einstiegskosten",
+    "context_downtrend_block": "Im groesseren Bild noch fallend",
+    "corridor_no_target": "Kein passendes Einstiegsniveau im Korridor",
+    "corridor_not_ready": "Korridor noch nicht bereit",
+    "corridor_short_horizon_too_high": "Im 24h-Korridor schon zu weit oben",
+    "corridor_too_high": "Im Wochenkorridor schon zu weit oben",
+    "corridor_wait_lower_stage_window": "Wartet auf tiefere Kaufzone",
+    "corridor_wait_rising_price": "Wartet auf erste Erholung",
+    "corridor_wait_stage_breach": "Wartet auf Bruch der Kaufzone",
+    "corridor_wait_stage_touch": "Wartet auf Beruehrung der Kaufzone",
+    "data_pending": "Daten werden noch aktualisiert",
+    "edge_below_entry": "Chance zu klein fuer einen sauberen Einstieg",
+    "entry_depth_cap": "Kauf waere fuer das Orderbuch zu gross",
+    "entry_depth_low": "Orderbuch zu duenn fuer den Einstieg",
+    "entry_depth_unknown": "Orderbuchtiefe noch unbekannt",
+    "fallback_running_lane": "Lane laeuft, Selektor-Stand fehlt noch",
+    "floor_anchor_not_ready": "Bodenlinie noch nicht bereit",
+    "floor_anchor_too_high": "Bodenlinie liegt noch zu hoch",
+    "floor_anchor_wait_rebound": "Wartet auf Erholung vom Boden",
+    "invalid_price": "Preis ist gerade nicht sauber verfuegbar",
+    "late_entry_top_zone": "Einstieg waere schon zu weit oben",
+    "listing_structural_decay_profile": "Seit dem Listing strukturell zu schwach",
+    "listing_structural_downdrift_mild": "Seit dem Listing langfristig zu schwach",
+    "macro_down_context": "Im groesseren Bild fallend",
+    "macro_downtrend": "Im groesseren Bild fallend",
+    "manual_entry_exit_only": "Nur manuelle Einstiege erlaubt",
+    "news_long_bias_required": "Kauf nur mit Rueckenwind aus der Nachrichtenlage",
+    "news_risk_off": "Nachrichtenlage blockiert neue Kauefe",
+    "no_macro_support_1h": "Zu wenig Rueckenwind im groesseren Bild",
+    "overextended": "Schon zu weit nach oben gelaufen",
+    "override_extended_trend": "Aufwaertsbewegung schon zu weit fortgeschritten",
+    "override_no_pullback_room": "Zu wenig Ruecksetzer-Spielraum",
+    "override_short_slope_weak": "Kurzfristiger Verlauf noch zu schwach",
+    "override_too_close_to_peak": "Zu nah am lokalen Hoch",
+    "post_dump_recovery_pending": "Erholt sich nach dem Abverkauf noch nicht stabil",
+    "pre_buy_volume": "Volumen vor dem Kauf zu niedrig",
+    "rebound_in_downtrend": "Nur Gegenbewegung in fallendem Verlauf",
+    "reentry_above_last_entry": "Wiedereinstieg waere ueber dem letzten Einstieg",
+    "reentry_cooldown": "Wiedereinstieg noch in Wartezeit",
+    "reentry_move_too_small": "Ruecksetzer fuer Wiedereinstieg noch zu klein",
+    "rule_3day_cycle_miss": "3-Tage-Zyklus passt noch nicht",
+    "rule_7d_crash_event": "In den letzten 7 Tagen gab es einen starken Kurssturz",
+    "rule_entry_quality_no_rebound": "Noch keine saubere Erholung fuer den Einstieg",
+    "rule_entry_quality_ret30": "Kurzfristige Erholung noch zu schwach",
+    "rule_entry_quality_slope": "Kurzfristiger Verlauf noch zu schwach",
+    "rule_entry_quality_spread": "Spread fuer den Einstieg zu hoch",
+    "rule_entry_quality_still_dumping": "Faellt noch zu stark",
+    "rule_entry_quality_still_falling": "Faellt noch",
+    "rule_entry_quality_unconfirmed": "Einstieg noch nicht bestaetigt",
+    "rule_entry_quality_volume": "Volumen fuer den Einstieg zu niedrig",
+    "rule_entry_quality_weak": "Einstiegssignal noch zu schwach",
+    "rule_micro_valley_context_miss": "Kein passender kleiner Talboden",
+    "rule_micro_valley_no_rebound": "Talboden ohne saubere Erholung",
+    "rule_micro_valley_too_late": "Talboden-Signal kommt zu spaet",
+    "rule_micro_valley_too_old": "Talboden-Signal ist zu alt",
+    "rule_micro_valley_unconfirmed": "Talboden noch nicht bestaetigt",
+    "rule_micro_valley_weak": "Talboden zu schwach",
+    "rule_not_in_lower_quarter": "Noch zu hoch in der 7-Tage-Range",
+    "rule_not_rising_yet": "Bewegung steigt noch nicht",
+    "selector_error_no_cache": "Selektor-Fehler, kein letzter Stand verfuegbar",
+    "selector_error_using_cache": "Selektor-Fehler, letzter Stand wird weiter genutzt",
+    "slope_profile_mismatch": "Verlauf passt nicht zum gewuenschten Muster",
+    "spread": "Spread zu hoch",
+    "still_dumping": "Faellt noch stark",
+    "structure_downtrend": "Struktur faellt noch",
+    "structure_rollover": "Struktur kippt wieder nach unten",
+    "structure_stall": "Struktur kommt nicht voran",
+    "token_prefilter_tag_seed": "Vorfilter: Seed-/Sondertoken",
+    "token_prefilter_thin_top_depth": "Vorfilter: Orderbuch zu duenn",
+    "token_prefilter_wide_spread": "Vorfilter: Spread zu hoch",
+    "trading_disabled": "Trading ist deaktiviert",
+}
 ROTATION_UNIT_RE = re.compile(r"codex-rotation-([a-z0-9]+)\.service")
 ROTATION_STATUS_TIMEOUT_SEC = max(0.25, float(os.getenv("ROTATION_STATUS_TIMEOUT_SEC", "1.5")))
 ROTATION_STATUS_RETRIES = max(1, int(os.getenv("ROTATION_STATUS_RETRIES", "3")))
@@ -199,6 +287,58 @@ def normalize_usdc_symbol(value: Any) -> str:
     if not text.endswith("USDC"):
         text = f"{text}USDC"
     return text
+
+
+def translate_non_buy_reason(reason: Any) -> str:
+    code = str(reason or "").strip().lower()
+    if not code:
+        return ""
+    translated = NON_BUY_REASON_TEXT.get(code)
+    if translated:
+        return translated
+    if code.startswith("listing_structural_"):
+        return "Seit dem Listing strukturell zu schwach"
+    if code.startswith("persistent_downdrift_"):
+        return "Langfristig zu schwacher Verlauf"
+    if code.startswith("token_prefilter_"):
+        tail = code.removeprefix("token_prefilter_")
+        if tail == "tag_seed":
+            return "Vorfilter: Seed-/Sondertoken"
+        if tail == "thin_top_depth":
+            return "Vorfilter: Orderbuch zu duenn"
+        if tail == "wide_spread":
+            return "Vorfilter: Spread zu hoch"
+        return "Vorfilter blockiert den Coin"
+    return code.replace("_", " ")
+
+
+def translate_non_buy_reason_counts(raw_counts: Any) -> tuple[dict[str, int], dict[str, int]]:
+    display_counts: dict[str, int] = {}
+    code_counts: dict[str, int] = {}
+    if not isinstance(raw_counts, dict):
+        return display_counts, code_counts
+
+    for key, value in raw_counts.items():
+        code = str(key or "").strip().lower()
+        if not code:
+            continue
+        count = to_int(value, 0)
+        if count <= 0:
+            continue
+        label = translate_non_buy_reason(code) or code
+        display_counts[label] = display_counts.get(label, 0) + count
+        code_counts[code] = code_counts.get(code, 0) + count
+    return display_counts, code_counts
+
+
+def env_csv_set_lower(name: str, default: str = "") -> set[str]:
+    raw = os.getenv(name, default)
+    out: set[str] = set()
+    for item in str(raw or "").split(","):
+        value = str(item or "").strip().lower()
+        if value:
+            out.add(value)
+    return out
 
 
 def symbol_from_journal_path(path: Path) -> str:
@@ -1068,6 +1208,886 @@ def get_usdc_symbols_cached() -> list[str]:
     return _SYMBOL_CACHE
 
 
+def fetch_binance_product_tags() -> dict[str, set[str]]:
+    url = "https://www.binance.com/bapi/asset/v2/public/asset-service/product/get-products"
+    req = Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json",
+            "Accept-Language": "en-US,en;q=0.9",
+        },
+        method="GET",
+    )
+    with urlopen(req, timeout=20) as resp:
+        payload = json.load(resp)
+    rows = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return {}
+
+    out: dict[str, set[str]] = {}
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        market = str(item.get("s", "")).strip().upper()
+        if not market:
+            continue
+        tags_raw = item.get("tags")
+        tags = {
+            str(tag).strip().lower()
+            for tag in (tags_raw or [])
+            if str(tag).strip()
+        } if isinstance(tags_raw, list) else set()
+        out[market] = tags
+    return out
+
+
+def get_binance_product_tags_cached() -> dict[str, set[str]]:
+    global _PRODUCT_TAG_CACHE, _PRODUCT_TAG_CACHE_AT
+
+    now = time.time()
+    if _PRODUCT_TAG_CACHE and (now - _PRODUCT_TAG_CACHE_AT) < _PRODUCT_TAG_CACHE_TTL_SEC:
+        return _PRODUCT_TAG_CACHE
+
+    _PRODUCT_TAG_CACHE = fetch_binance_product_tags()
+    _PRODUCT_TAG_CACHE_AT = now
+    return _PRODUCT_TAG_CACHE
+
+
+def _fetch_daily_close_series(symbol: str, *, limit: int = 1000) -> list[float]:
+    params = {"symbol": symbol, "interval": "1d", "limit": max(10, int(limit))}
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            rows = binance_get("/api/v3/klines", params=params)
+            if not isinstance(rows, list):
+                return []
+            closes: list[float] = []
+            for row in rows:
+                if not isinstance(row, list) or len(row) < 5:
+                    continue
+                try:
+                    close = float(row[4])
+                except Exception:
+                    continue
+                if close > 0.0:
+                    closes.append(close)
+            return closes
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            time.sleep(0.25 * float(attempt + 1))
+    if last_exc is not None:
+        raise last_exc
+    return []
+
+
+def _resample_series(values: list[float], points: int) -> list[float]:
+    if not values:
+        return []
+    target = max(2, int(points))
+    if len(values) == 1:
+        return [float(values[0])] * target
+    if len(values) == target:
+        return [float(v) for v in values]
+    out: list[float] = []
+    max_idx = len(values) - 1
+    for idx in range(target):
+        pos = (float(idx) * float(max_idx)) / float(target - 1)
+        lo = int(math.floor(pos))
+        hi = min(max_idx, lo + 1)
+        frac = pos - float(lo)
+        lo_val = float(values[lo])
+        hi_val = float(values[hi])
+        out.append(lo_val + ((hi_val - lo_val) * frac))
+    return out
+
+
+def _normalize_log_series(values: list[float]) -> list[float]:
+    if not values:
+        return []
+    base = max(EPS, float(values[0]))
+    return [math.log(max(EPS, float(value)) / base) for value in values]
+
+
+def _pearson_corr(xs: list[float], ys: list[float]) -> float:
+    n = min(len(xs), len(ys))
+    if n < 3:
+        return 0.0
+    a = xs[:n]
+    b = ys[:n]
+    mean_a = sum(a) / float(n)
+    mean_b = sum(b) / float(n)
+    var_a = sum((v - mean_a) ** 2 for v in a)
+    var_b = sum((v - mean_b) ** 2 for v in b)
+    if var_a <= 0.0 or var_b <= 0.0:
+        return 0.0
+    cov = sum((x - mean_a) * (y - mean_b) for x, y in zip(a, b))
+    return max(-1.0, min(1.0, cov / math.sqrt(var_a * var_b)))
+
+
+def _end_return_pct(values: list[float]) -> float:
+    if len(values) < 2 or values[0] <= 0.0:
+        return 0.0
+    return ((float(values[-1]) / float(values[0])) - 1.0) * 100.0
+
+
+def _max_drawdown_pct(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    peak = max(EPS, float(values[0]))
+    worst = 0.0
+    for value in values:
+        px = max(EPS, float(value))
+        if px > peak:
+            peak = px
+        drawdown = (px / peak) - 1.0
+        if drawdown < worst:
+            worst = drawdown
+    return worst * 100.0
+
+
+def _quantile(values: list[float], q: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(float(value) for value in values)
+    if len(ordered) == 1:
+        return ordered[0]
+    qq = max(0.0, min(1.0, float(q)))
+    pos = qq * float(len(ordered) - 1)
+    lo = int(math.floor(pos))
+    hi = min(len(ordered) - 1, lo + 1)
+    frac = pos - float(lo)
+    return ordered[lo] + ((ordered[hi] - ordered[lo]) * frac)
+
+
+def _linear_fit(values: list[float]) -> tuple[float, float]:
+    n = len(values)
+    if n <= 1:
+        return 0.0, (float(values[0]) if values else 0.0)
+    mean_x = float(n - 1) / 2.0
+    mean_y = sum(float(value) for value in values) / float(n)
+    var_x = sum((float(idx) - mean_x) ** 2 for idx in range(n))
+    if var_x <= 0.0:
+        return 0.0, mean_y
+    cov = sum((float(idx) - mean_x) * (float(value) - mean_y) for idx, value in enumerate(values))
+    slope = cov / var_x
+    intercept = mean_y - (slope * mean_x)
+    return slope, intercept
+
+
+def _zro_style_window_metrics(
+    window: list[float],
+    *,
+    deadband_floor: float,
+    deadband_std_mult: float,
+    within_std_mult: float,
+) -> dict[str, float] | None:
+    window = [float(value) for value in window]
+    n = len(window)
+    if n < 2:
+        return None
+
+    linear_slope, linear_intercept = _linear_fit(window)
+    line_start = linear_intercept
+    line_end = linear_intercept + (linear_slope * float(n - 1))
+    if line_start <= EPS:
+        return None
+    trend_pct = ((line_end / line_start) - 1.0) * 100.0
+    start_end_pct = ((window[-1] / max(EPS, window[0])) - 1.0) * 100.0
+
+    log_closes = [math.log(max(EPS, float(value))) for value in window]
+    slope, intercept = _linear_fit(log_closes)
+
+    fitted = [intercept + (slope * float(idx)) for idx in range(n)]
+    residuals = [value - fit for value, fit in zip(log_closes, fitted)]
+    residual_std = statistics.pstdev(residuals) if len(residuals) > 1 else 0.0
+    residual_span = _quantile(residuals, 0.90) - _quantile(residuals, 0.10)
+
+    deadband = max(float(deadband_floor), residual_std * float(deadband_std_mult))
+    prev_sign = 0
+    sign_changes = 0
+    valid_steps = 0
+    for residual in residuals:
+        if residual > deadband:
+            sign = 1
+        elif residual < -deadband:
+            sign = -1
+        else:
+            sign = 0
+        if sign == 0:
+            continue
+        if prev_sign != 0:
+            valid_steps += 1
+            if sign != prev_sign:
+                sign_changes += 1
+        prev_sign = sign
+    crossing_rate = (float(sign_changes) / float(valid_steps)) if valid_steps > 0 else 0.0
+
+    within_band_limit = max(0.02, residual_std * float(within_std_mult))
+    within_band_pct = (
+        float(sum(1 for residual in residuals if abs(residual) <= within_band_limit)) / float(n)
+    )
+
+    half = n // 2
+    if half <= 0 or (n - half) <= 0:
+        return None
+    median_total = _quantile(window, 0.50)
+    median_first = _quantile(window[:half], 0.50)
+    median_second = _quantile(window[half:], 0.50)
+    level_shift_pct = (abs(median_second - median_first) / max(EPS, median_total)) * 100.0
+
+    return {
+        "bars": float(n),
+        "trendPct": float(trend_pct),
+        "startEndPct": float(start_end_pct),
+        "residualStd": float(residual_std),
+        "residualSpan": float(residual_span),
+        "crossingRate": float(crossing_rate),
+        "withinBandPct": float(within_band_pct),
+        "levelShiftPct": float(level_shift_pct),
+    }
+
+
+def _zro_style_pick_best_window(
+    closes: list[float],
+    *,
+    min_bars: int,
+    max_bars: int,
+    window_step: int,
+    trend_abs_max_pct: float,
+    start_end_abs_max_pct: float,
+    residual_span_min: float,
+    residual_span_max: float,
+    crossing_rate_min: float,
+    within_band_min: float,
+    deadband_floor: float,
+    deadband_std_mult: float,
+    within_std_mult: float,
+    target_crossing_rate: float,
+    target_within_band_pct: float,
+) -> dict[str, float] | None:
+    series = [float(value) for value in closes]
+    if len(series) < min_bars:
+        return None
+    hi = min(max_bars, len(series))
+    if hi < min_bars:
+        return None
+
+    step = max(1, int(window_step))
+    best: dict[str, float] | None = None
+    for window_len in range(min_bars, hi + 1, step):
+        window = series[-window_len:]
+        metrics = _zro_style_window_metrics(
+            window,
+            deadband_floor=deadband_floor,
+            deadband_std_mult=deadband_std_mult,
+            within_std_mult=within_std_mult,
+        )
+        if metrics is None:
+            continue
+
+        trend_pct = abs(float(metrics.get("trendPct", 0.0)))
+        start_end_pct = abs(float(metrics.get("startEndPct", 0.0)))
+        residual_span = float(metrics.get("residualSpan", 0.0))
+        crossing_rate = float(metrics.get("crossingRate", 0.0))
+        within_band_pct = float(metrics.get("withinBandPct", 0.0))
+
+        if trend_pct > trend_abs_max_pct:
+            continue
+        if start_end_pct > start_end_abs_max_pct:
+            continue
+        if residual_span < residual_span_min or residual_span > residual_span_max:
+            continue
+        if crossing_rate < crossing_rate_min:
+            continue
+        if within_band_pct < within_band_min:
+            continue
+
+        local_score = (
+            (trend_pct * 1.0)
+            + (start_end_pct * 0.20)
+            + (abs(crossing_rate - target_crossing_rate) * 30.0)
+            + (abs(within_band_pct - target_within_band_pct) * 30.0)
+        )
+        enriched = dict(metrics)
+        enriched["windowBars"] = float(window_len)
+        enriched["localScore"] = float(local_score)
+        if best is None or float(enriched.get("localScore", 1e12)) < float(best.get("localScore", 1e12)):
+            best = enriched
+    return best
+
+
+def _zro_style_fingerprint(symbols: list[str]) -> str:
+    normalized = sorted(
+        {
+            normalize_usdc_symbol(symbol)
+            for symbol in symbols
+            if normalize_usdc_symbol(symbol)
+        }
+    )
+    raw = ",".join(normalized)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _compute_zro_style_payload(symbols: list[str]) -> dict[str, Any]:
+    requested_reference_symbol = normalize_usdc_symbol(
+        os.getenv("RELAY_ZRO_STYLE_REFERENCE", "ZROUSDC")
+    )
+    reference_symbol = requested_reference_symbol
+
+    min_bars = max(120, min(900, int(float(os.getenv("RELAY_ZRO_STYLE_MIN_BARS", "300")))))
+    max_bars = max(min_bars, min(1000, int(float(os.getenv("RELAY_ZRO_STYLE_MAX_BARS", "900")))))
+    kline_limit = max(400, min(1000, int(float(os.getenv("RELAY_ZRO_STYLE_KLINE_LIMIT", str(max_bars + 30))))))
+    max_workers = max(1, min(6, int(float(os.getenv("RELAY_ZRO_STYLE_MAX_WORKERS", "3")))))
+    window_step = max(1, int(float(os.getenv("RELAY_ZRO_STYLE_WINDOW_STEP_DAYS", "30"))))
+    max_results = max(0, int(float(os.getenv("RELAY_ZRO_STYLE_MAX_RESULTS", "0"))))
+    score_max = float(os.getenv("RELAY_ZRO_STYLE_SCORE_MAX", "9999"))
+
+    trend_abs_max_pct = max(2.0, float(os.getenv("RELAY_ZRO_STYLE_TREND_ABS_MAX_PCT", "45")))
+    start_end_abs_max_pct = max(2.0, float(os.getenv("RELAY_ZRO_STYLE_START_END_ABS_MAX_PCT", "70")))
+    residual_span_min = max(0.0, float(os.getenv("RELAY_ZRO_STYLE_RES_SPAN_MIN", "0.18")))
+    residual_span_max = max(residual_span_min, float(os.getenv("RELAY_ZRO_STYLE_RES_SPAN_MAX", "1.05")))
+    crossing_rate_min = max(0.0, min(1.0, float(os.getenv("RELAY_ZRO_STYLE_CROSS_MIN", "0.015"))))
+    within_band_min = max(0.0, min(1.0, float(os.getenv("RELAY_ZRO_STYLE_WITHIN_MIN", "0.58"))))
+    level_shift_max_pct = max(0.0, float(os.getenv("RELAY_ZRO_STYLE_LEVEL_SHIFT_MAX_PCT", "80")))
+    deadband_floor = max(0.001, float(os.getenv("RELAY_ZRO_STYLE_DEADBAND_FLOOR", "0.012")))
+    deadband_std_mult = max(0.05, float(os.getenv("RELAY_ZRO_STYLE_DEADBAND_STD_MULT", "0.25")))
+    within_std_mult = max(0.2, float(os.getenv("RELAY_ZRO_STYLE_WITHIN_STD_MULT", "1.15")))
+    target_crossing_rate = max(0.0, min(1.0, float(os.getenv("RELAY_ZRO_STYLE_TARGET_CROSS", "0.045"))))
+    target_within_band_pct = max(0.0, min(1.0, float(os.getenv("RELAY_ZRO_STYLE_TARGET_WITHIN", "0.72"))))
+    blocked_tags = env_csv_set_lower("RELAY_ZRO_STYLE_BLOCK_TAGS", "seed")
+
+    universe = sorted(
+        {
+            normalize_usdc_symbol(symbol)
+            for symbol in symbols
+            if normalize_usdc_symbol(symbol)
+        }
+    )
+    if reference_symbol and reference_symbol not in universe:
+        universe.append(reference_symbol)
+        universe.sort()
+    if not universe:
+        return {
+            "status": "error",
+            "error": "empty_universe",
+            "referenceSymbol": reference_symbol,
+            "requestedReferenceSymbol": requested_reference_symbol,
+            "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "pairs": [],
+            "symbols": [],
+            "pairCount": 0,
+            "universeCount": 0,
+        }
+
+    ref_candidates: list[str] = []
+    ref_seen: set[str] = set()
+
+    def _push_ref(symbol: str) -> None:
+        normalized = str(symbol or "").strip().upper()
+        if not normalized or normalized in ref_seen:
+            return
+        ref_seen.add(normalized)
+        ref_candidates.append(normalized)
+
+    _push_ref(reference_symbol)
+    base = ""
+    for suffix in ("USDC", "USDT", "FDUSD", "BUSD", "TUSD", "BTC", "ETH", "BNB", "EUR"):
+        if reference_symbol.endswith(suffix) and len(reference_symbol) > len(suffix):
+            base = reference_symbol[: -len(suffix)]
+            break
+    if base:
+        _push_ref(f"{base}USDT")
+        _push_ref(f"{base}FDUSD")
+        _push_ref(f"{base}BUSD")
+        _push_ref(f"{base}TUSD")
+        _push_ref(f"{base}BTC")
+        _push_ref(f"{base}ETH")
+        _push_ref(f"{base}BNB")
+
+    ref_metrics: dict[str, float] | None = None
+    for candidate in ref_candidates:
+        try:
+            ref_closes = _fetch_daily_close_series(candidate, limit=kline_limit)
+        except Exception:
+            ref_closes = []
+        metrics = _zro_style_pick_best_window(
+            ref_closes,
+            min_bars=min_bars,
+            max_bars=max_bars,
+            window_step=window_step,
+            trend_abs_max_pct=trend_abs_max_pct,
+            start_end_abs_max_pct=start_end_abs_max_pct,
+            residual_span_min=residual_span_min,
+            residual_span_max=residual_span_max,
+            crossing_rate_min=crossing_rate_min,
+            within_band_min=within_band_min,
+            deadband_floor=deadband_floor,
+            deadband_std_mult=deadband_std_mult,
+            within_std_mult=within_std_mult,
+            target_crossing_rate=target_crossing_rate,
+            target_within_band_pct=target_within_band_pct,
+        )
+        if metrics is not None and float(metrics.get("levelShiftPct", 0.0)) <= level_shift_max_pct:
+            reference_symbol = candidate
+            ref_metrics = metrics
+            break
+
+    if ref_metrics is None:
+        return {
+            "status": "error",
+            "error": "reference_history_too_short",
+            "referenceSymbol": reference_symbol,
+            "requestedReferenceSymbol": requested_reference_symbol,
+            "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "pairs": [],
+            "symbols": [],
+            "pairCount": 0,
+            "universeCount": max(0, len(universe) - 1),
+        }
+
+    def _score(metrics: dict[str, float]) -> float:
+        return (
+            (abs(float(metrics.get("trendPct", 0.0)) - float(ref_metrics.get("trendPct", 0.0))) * 0.30)
+            + (abs(float(metrics.get("startEndPct", 0.0)) - float(ref_metrics.get("startEndPct", 0.0))) * 0.06)
+            + (abs(float(metrics.get("crossingRate", 0.0)) - float(ref_metrics.get("crossingRate", 0.0))) * 40.0)
+            + (abs(float(metrics.get("withinBandPct", 0.0)) - float(ref_metrics.get("withinBandPct", 0.0))) * 35.0)
+            + (abs(float(metrics.get("residualSpan", 0.0)) - float(ref_metrics.get("residualSpan", 0.0))) * 12.0)
+        )
+
+    def _evaluate_symbol(symbol: str) -> dict[str, Any] | None:
+        if symbol == reference_symbol:
+            return None
+        try:
+            closes = _fetch_daily_close_series(symbol, limit=kline_limit)
+        except Exception:
+            return None
+        metrics = _zro_style_pick_best_window(
+            closes,
+            min_bars=min_bars,
+            max_bars=max_bars,
+            window_step=window_step,
+            trend_abs_max_pct=trend_abs_max_pct,
+            start_end_abs_max_pct=start_end_abs_max_pct,
+            residual_span_min=residual_span_min,
+            residual_span_max=residual_span_max,
+            crossing_rate_min=crossing_rate_min,
+            within_band_min=within_band_min,
+            deadband_floor=deadband_floor,
+            deadband_std_mult=deadband_std_mult,
+            within_std_mult=within_std_mult,
+            target_crossing_rate=target_crossing_rate,
+            target_within_band_pct=target_within_band_pct,
+        )
+        if metrics is None:
+            return None
+
+        level_shift_pct = float(metrics.get("levelShiftPct", 0.0))
+        if level_shift_pct > level_shift_max_pct:
+            return None
+
+        score = _score(metrics)
+        if score > score_max:
+            return None
+
+        return {
+            "symbol": symbol,
+            "score": float(score),
+            "trendPct": float(metrics.get("trendPct", 0.0)),
+            "startEndPct": float(metrics.get("startEndPct", 0.0)),
+            "residualStd": float(metrics.get("residualStd", 0.0)),
+            "residualSpan": float(metrics.get("residualSpan", 0.0)),
+            "crossingRate": float(metrics.get("crossingRate", 0.0)),
+            "withinBandPct": float(metrics.get("withinBandPct", 0.0)),
+            "levelShiftPct": level_shift_pct,
+            "bars": int(metrics.get("bars", 0.0)),
+            "windowBars": int(metrics.get("windowBars", 0.0)),
+        }
+
+    matches: list[dict[str, Any]] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {executor.submit(_evaluate_symbol, symbol): symbol for symbol in universe}
+        for future in concurrent.futures.as_completed(future_map):
+            try:
+                row = future.result()
+            except Exception:
+                row = None
+            if isinstance(row, dict):
+                matches.append(row)
+
+    matches.sort(
+        key=lambda item: (
+            float(item.get("score", 0.0)),
+            str(item.get("symbol", "")),
+        )
+    )
+    if max_results > 0:
+        matches = matches[:max_results]
+
+    pairs: list[dict[str, Any]] = [
+        {
+            "symbol": reference_symbol,
+            "score": 0.0,
+            "trendPct": float(ref_metrics.get("trendPct", 0.0)),
+            "startEndPct": float(ref_metrics.get("startEndPct", 0.0)),
+            "residualStd": float(ref_metrics.get("residualStd", 0.0)),
+            "residualSpan": float(ref_metrics.get("residualSpan", 0.0)),
+            "crossingRate": float(ref_metrics.get("crossingRate", 0.0)),
+            "withinBandPct": float(ref_metrics.get("withinBandPct", 0.0)),
+            "levelShiftPct": float(ref_metrics.get("levelShiftPct", 0.0)),
+            "bars": int(ref_metrics.get("bars", 0.0)),
+            "windowBars": int(ref_metrics.get("windowBars", 0.0)),
+            "localScore": float(ref_metrics.get("localScore", 0.0)),
+            "isReference": True,
+        }
+    ]
+    pairs.extend(matches)
+
+    if blocked_tags and pairs:
+        try:
+            product_tags = get_binance_product_tags_cached()
+        except Exception:
+            product_tags = {}
+        if product_tags:
+            filtered_pairs: list[dict[str, Any]] = []
+            for item in pairs:
+                symbol = str(item.get("symbol", "")).strip().upper()
+                if not symbol:
+                    continue
+                symbol_tags = {str(tag).strip().lower() for tag in product_tags.get(symbol, set())}
+                if any(tag in blocked_tags for tag in symbol_tags):
+                    continue
+                filtered_pairs.append(item)
+            pairs = filtered_pairs
+
+    return {
+        "status": "ready",
+        "referenceSymbol": reference_symbol,
+        "requestedReferenceSymbol": requested_reference_symbol,
+        "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "minBars": int(min_bars),
+        "maxBars": int(max_bars),
+        "pairCount": len(pairs),
+        "universeCount": max(0, len(universe) - 1),
+        "blockedTags": sorted(blocked_tags),
+        "pairs": pairs,
+        "symbols": [str(item.get("symbol", "")) for item in pairs if str(item.get("symbol", ""))],
+    }
+
+
+def get_zro_style_snapshot(symbols: list[str]) -> dict[str, Any]:
+    global _ZRO_STYLE_CACHE, _ZRO_STYLE_CACHE_AT
+
+    ttl_sec = max(300.0, float(os.getenv("RELAY_ZRO_STYLE_CACHE_TTL_SEC", "21600")))
+    reference_symbol = normalize_usdc_symbol(os.getenv("RELAY_ZRO_STYLE_REFERENCE", "ZROUSDC"))
+    fingerprint = _zro_style_fingerprint(symbols)
+    now = time.time()
+
+    with _ZRO_STYLE_CACHE_LOCK:
+        cached = dict(_ZRO_STYLE_CACHE) if isinstance(_ZRO_STYLE_CACHE, dict) else None
+        cached_at = float(_ZRO_STYLE_CACHE_AT)
+
+    cache_fresh = (
+        isinstance(cached, dict)
+        and str(cached.get("fingerprint", "")) == fingerprint
+        and (now - cached_at) < ttl_sec
+        and str(cached.get("status", "")) == "ready"
+    )
+    if cache_fresh:
+        return cached
+
+    if _ZRO_STYLE_REFRESH_LOCK.acquire(blocking=False):
+        universe_copy = list(symbols)
+
+        def _worker() -> None:
+            global _ZRO_STYLE_CACHE, _ZRO_STYLE_CACHE_AT
+            try:
+                payload = _compute_zro_style_payload(universe_copy)
+            except Exception as exc:  # noqa: BLE001
+                payload = {
+                    "status": "error",
+                    "error": str(exc),
+                    "referenceSymbol": reference_symbol,
+                    "requestedReferenceSymbol": reference_symbol,
+                    "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    "pairs": [],
+                    "symbols": [],
+                    "pairCount": 0,
+                    "universeCount": max(0, len(set(universe_copy)) - 1),
+                }
+            payload["fingerprint"] = fingerprint
+            with _ZRO_STYLE_CACHE_LOCK:
+                _ZRO_STYLE_CACHE = payload
+                _ZRO_STYLE_CACHE_AT = time.time()
+            _ZRO_STYLE_REFRESH_LOCK.release()
+
+        threading.Thread(target=_worker, name="relay-zro-style-refresh", daemon=True).start()
+
+    if isinstance(cached, dict):
+        stale = dict(cached)
+        stale["stale"] = True
+        if str(stale.get("status", "")) not in {"ready", "error"}:
+            stale["status"] = "loading"
+        return stale
+
+    return {
+        "status": "loading",
+        "referenceSymbol": reference_symbol,
+        "requestedReferenceSymbol": reference_symbol,
+        "generatedAt": "",
+        "pairs": [],
+        "symbols": [],
+        "pairCount": 0,
+        "universeCount": max(
+            0,
+            len(
+                {
+                    normalize_usdc_symbol(symbol)
+                    for symbol in symbols
+                    if normalize_usdc_symbol(symbol)
+                }
+            )
+            - 1,
+        ),
+    }
+
+
+def _og_similarity_fingerprint(symbols: list[str]) -> str:
+    normalized = sorted(
+        {
+            normalize_usdc_symbol(symbol)
+            for symbol in symbols
+            if normalize_usdc_symbol(symbol)
+        }
+    )
+    raw = ",".join(normalized)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _compute_og_similarity_payload(symbols: list[str]) -> dict[str, Any]:
+    requested_reference_symbol = normalize_usdc_symbol(
+        os.getenv("RELAY_OG_SIMILAR_REFERENCE", "OGUSDC")
+    )
+    reference_symbol = requested_reference_symbol
+    points = max(60, int(float(os.getenv("RELAY_OG_SIMILAR_POINTS", "180"))))
+    min_bars = max(45, int(float(os.getenv("RELAY_OG_SIMILAR_MIN_BARS", "120"))))
+    min_corr = max(-1.0, min(1.0, float(os.getenv("RELAY_OG_SIMILAR_MIN_CORR", "0.30"))))
+    top_k = max(1, int(float(os.getenv("RELAY_OG_SIMILAR_TOP_K", "80"))))
+    kline_limit = max(180, int(float(os.getenv("RELAY_OG_SIMILAR_KLINE_LIMIT", "1000"))))
+    max_workers = max(1, min(8, int(float(os.getenv("RELAY_OG_SIMILAR_MAX_WORKERS", "4")))))
+
+    universe = sorted(
+        {
+            normalize_usdc_symbol(symbol)
+            for symbol in symbols
+            if normalize_usdc_symbol(symbol)
+        }
+    )
+    if reference_symbol and reference_symbol not in universe:
+        universe.append(reference_symbol)
+        universe.sort()
+    if not universe:
+        return {
+            "status": "error",
+            "error": "empty_universe",
+            "referenceSymbol": reference_symbol,
+            "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "pairs": [],
+            "symbols": [],
+            "pairCount": 0,
+            "universeCount": 0,
+        }
+
+    ref_candidates: list[str] = []
+    ref_seen: set[str] = set()
+
+    def _push_ref(symbol: str) -> None:
+        normalized = str(symbol or "").strip().upper()
+        if not normalized or normalized in ref_seen:
+            return
+        ref_seen.add(normalized)
+        ref_candidates.append(normalized)
+
+    _push_ref(reference_symbol)
+    base = ""
+    for suffix in ("USDC", "USDT", "FDUSD", "BUSD", "TUSD", "BTC", "ETH", "BNB", "EUR"):
+        if reference_symbol.endswith(suffix) and len(reference_symbol) > len(suffix):
+            base = reference_symbol[: -len(suffix)]
+            break
+    if base:
+        _push_ref(f"{base}USDT")
+        _push_ref(f"{base}FDUSD")
+        _push_ref(f"{base}BUSD")
+        _push_ref(f"{base}TUSD")
+        _push_ref(f"{base}BTC")
+        _push_ref(f"{base}ETH")
+        _push_ref(f"{base}BNB")
+    reference_closes: list[float] = []
+    for candidate in ref_candidates:
+        try:
+            series = _fetch_daily_close_series(candidate, limit=kline_limit)
+        except Exception:
+            series = []
+        if len(series) >= min_bars:
+            reference_symbol = candidate
+            reference_closes = series
+            break
+    if len(reference_closes) < min_bars:
+        return {
+            "status": "error",
+            "error": "reference_history_too_short",
+            "referenceSymbol": reference_symbol,
+            "requestedReferenceSymbol": requested_reference_symbol,
+            "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "pairs": [],
+            "symbols": [],
+            "pairCount": 0,
+            "universeCount": max(0, len(universe) - 1),
+        }
+
+    ref_series = _resample_series(_normalize_log_series(reference_closes), points)
+    ref_ret_pct = _end_return_pct(reference_closes)
+    ref_drawdown_pct = _max_drawdown_pct(reference_closes)
+    comparisons: list[dict[str, Any]] = []
+
+    def _evaluate_symbol(symbol: str) -> dict[str, Any] | None:
+        if symbol == reference_symbol:
+            return None
+        try:
+            closes = _fetch_daily_close_series(symbol, limit=kline_limit)
+        except Exception:
+            return None
+        if len(closes) < min_bars:
+            return None
+        series = _resample_series(_normalize_log_series(closes), points)
+        corr = _pearson_corr(ref_series, series)
+        if corr < min_corr:
+            return None
+        ret_pct = _end_return_pct(closes)
+        drawdown_pct = _max_drawdown_pct(closes)
+        score = (
+            (corr * 100.0)
+            - (abs(ret_pct - ref_ret_pct) * 0.35)
+            - (abs(drawdown_pct - ref_drawdown_pct) * 0.15)
+        )
+        return {
+            "symbol": symbol,
+            "corr": float(corr),
+            "score": float(score),
+            "retPct": float(ret_pct),
+            "drawdownPct": float(drawdown_pct),
+            "bars": int(len(closes)),
+        }
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {executor.submit(_evaluate_symbol, symbol): symbol for symbol in universe}
+        for future in concurrent.futures.as_completed(future_map):
+            try:
+                result = future.result()
+            except Exception:
+                result = None
+            if isinstance(result, dict):
+                comparisons.append(result)
+
+    comparisons.sort(
+        key=lambda item: (
+            -float(item.get("score", 0.0)),
+            -float(item.get("corr", 0.0)),
+            str(item.get("symbol", "")),
+        )
+    )
+    selected_pairs = comparisons[:top_k]
+
+    return {
+        "status": "ready",
+        "referenceSymbol": reference_symbol,
+        "requestedReferenceSymbol": requested_reference_symbol,
+        "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "minCorr": float(min_corr),
+        "pairCount": len(selected_pairs),
+        "universeCount": max(0, len(universe) - 1),
+        "pairs": selected_pairs,
+        "symbols": [str(item.get("symbol", "")) for item in selected_pairs if str(item.get("symbol", ""))],
+    }
+
+
+def get_og_similarity_snapshot(symbols: list[str]) -> dict[str, Any]:
+    global _OG_SIMILAR_CACHE, _OG_SIMILAR_CACHE_AT
+
+    ttl_sec = max(60.0, float(os.getenv("RELAY_OG_SIMILAR_CACHE_TTL_SEC", "21600")))
+    reference_symbol = normalize_usdc_symbol(os.getenv("RELAY_OG_SIMILAR_REFERENCE", "OGUSDC"))
+    fingerprint = _og_similarity_fingerprint(symbols)
+    now = time.time()
+
+    with _OG_SIMILAR_CACHE_LOCK:
+        cached = dict(_OG_SIMILAR_CACHE) if isinstance(_OG_SIMILAR_CACHE, dict) else None
+        cached_at = float(_OG_SIMILAR_CACHE_AT)
+
+    cache_fresh = (
+        isinstance(cached, dict)
+        and str(cached.get("fingerprint", "")) == fingerprint
+        and (now - cached_at) < ttl_sec
+        and str(cached.get("status", "")) == "ready"
+    )
+    if cache_fresh:
+        return cached
+
+    if _OG_SIMILAR_REFRESH_LOCK.acquire(blocking=False):
+        universe_copy = list(symbols)
+
+        def _worker() -> None:
+            global _OG_SIMILAR_CACHE, _OG_SIMILAR_CACHE_AT
+            try:
+                payload = _compute_og_similarity_payload(universe_copy)
+            except Exception as exc:  # noqa: BLE001
+                payload = {
+                    "status": "error",
+                    "error": str(exc),
+                    "referenceSymbol": reference_symbol,
+                    "requestedReferenceSymbol": reference_symbol,
+                    "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    "pairs": [],
+                    "symbols": [],
+                    "pairCount": 0,
+                    "universeCount": max(0, len(set(universe_copy)) - 1),
+                }
+            payload["fingerprint"] = fingerprint
+            with _OG_SIMILAR_CACHE_LOCK:
+                _OG_SIMILAR_CACHE = payload
+                _OG_SIMILAR_CACHE_AT = time.time()
+            _OG_SIMILAR_REFRESH_LOCK.release()
+
+        threading.Thread(target=_worker, name="relay-og-sim-refresh", daemon=True).start()
+
+    if isinstance(cached, dict):
+        stale = dict(cached)
+        stale["stale"] = True
+        if str(stale.get("status", "")) not in {"ready", "error"}:
+            stale["status"] = "loading"
+        return stale
+
+    return {
+        "status": "loading",
+        "referenceSymbol": reference_symbol,
+        "requestedReferenceSymbol": reference_symbol,
+        "generatedAt": "",
+        "pairs": [],
+        "symbols": [],
+        "pairCount": 0,
+        "universeCount": max(
+            0,
+            len(
+                {
+                    normalize_usdc_symbol(symbol)
+                    for symbol in symbols
+                    if normalize_usdc_symbol(symbol)
+                }
+            )
+            - 1,
+        ),
+    }
+
+
 def fetch_my_trades_for_symbol(symbol: str, start_ms: int, end_ms: int, offset_ms: int) -> list[dict[str, Any]]:
     global _MY_TRADES_NEXT_TS
 
@@ -1286,6 +2306,10 @@ def load_rotation_meta_summary() -> dict[str, Any]:
             if "failed_start" in str(key).strip().lower()
         )
 
+        dominant_gate_reasons, dominant_gate_reason_codes = translate_non_buy_reason_counts(
+            watch.get("dominant_gate_reasons") or {}
+        )
+
         rows.append(
             {
                 "strategy": strategy,
@@ -1318,11 +2342,8 @@ def load_rotation_meta_summary() -> dict[str, Any]:
                 "mlPositiveCount": to_int(watch.get("ml_positive_count"), 0),
                 "avgTopPProfit": to_float(watch.get("avg_top_p_profit"), 0.0),
                 "avgTopStrategyScore": to_float(watch.get("avg_top_strategy_score"), 0.0),
-                "dominantGateReasons": {
-                    str(key): to_int(value, 0)
-                    for key, value in (watch.get("dominant_gate_reasons") or {}).items()
-                    if str(key).strip()
-                },
+                "dominantGateReasons": dominant_gate_reasons,
+                "dominantGateReasonCodes": dominant_gate_reason_codes,
                 "watchTopSymbols": watch_top_symbols,
                 "universeTopSymbols": universe_top_symbols,
             }
@@ -1614,7 +2635,7 @@ def load_rotation_points() -> dict[str, Any]:
         if not symbol:
             continue
 
-        gate_reason = str(item.get("gate_reason", "")).strip()
+        gate_reason = str(item.get("gate_reason", "")).strip().lower()
         macro_up_context = to_bool(item.get("macro_up_context", False))
         long_term_uptrend_context = to_bool(item.get("long_term_uptrend_context", False))
         structure_phase = str(item.get("structure_phase", "")).strip().lower()
@@ -1635,7 +2656,8 @@ def load_rotation_points() -> dict[str, Any]:
                 "selected": symbol in selected_symbols,
                 "eligible": to_bool(item.get("eligible", False)),
                 "score": to_float(item.get("score"), 0.0),
-                "gateReason": gate_reason,
+                "gateReasonCode": gate_reason,
+                "gateReason": translate_non_buy_reason(gate_reason),
                 "point1Ok": point1_ok,
                 "point2Ok": point2_ok,
                 "point3Ok": point3_ok,
@@ -1693,7 +2715,7 @@ def load_rotation_points() -> dict[str, Any]:
             "hits": len(point1_symbols),
             "total": len(rows),
             "symbols": point1_symbols,
-            "blockedCount": sum(1 for row in rows if str(row["gateReason"]) in POINT1_GATE_REASONS),
+            "blockedCount": sum(1 for row in rows if str(row["gateReasonCode"]) in POINT1_GATE_REASONS),
         },
         "point2": {
             "name": "2 Makro",
@@ -1701,7 +2723,7 @@ def load_rotation_points() -> dict[str, Any]:
             "hits": len(point2_symbols),
             "total": len(rows),
             "symbols": point2_symbols,
-            "blockedCount": sum(1 for row in rows if str(row["gateReason"]) in POINT2_GATE_REASONS),
+            "blockedCount": sum(1 for row in rows if str(row["gateReasonCode"]) in POINT2_GATE_REASONS),
         },
         "point3": {
             "name": "3 Co/Vol",
@@ -1709,7 +2731,7 @@ def load_rotation_points() -> dict[str, Any]:
             "hits": len(point3_symbols),
             "total": len(rows),
             "symbols": point3_symbols,
-            "blockedCount": sum(1 for row in rows if str(row["gateReason"]) in POINT3_GATE_REASONS),
+            "blockedCount": sum(1 for row in rows if str(row["gateReasonCode"]) in POINT3_GATE_REASONS),
         },
     }
 
@@ -1845,6 +2867,7 @@ def load_rotation_live() -> dict[str, Any]:
             selector_long_pos_pct: float,
             runtime_meta: dict[str, Any],
         ) -> dict[str, Any]:
+            gate_reason_code = str(gate_reason or "").strip().lower()
             display_strategy = _display_rotation_strategy(
                 selected_strategy_map.get(symbol, ""),
                 runtime_meta.get("strategy", ""),
@@ -1862,7 +2885,8 @@ def load_rotation_live() -> dict[str, Any]:
                 "manualEntryExitOnly": bool(runtime_meta.get("manualEntryExitOnly", False)),
                 "eligible": bool(eligible),
                 "score": float(score),
-                "gateReason": gate_reason,
+                "gateReasonCode": gate_reason_code,
+                "gateReason": translate_non_buy_reason(gate_reason_code),
                 "selectedSince": selected_since_iso,
                 "entryOpenedAt": "",
                 "statusOk": False,
@@ -2214,7 +3238,6 @@ def load_rotation_live() -> dict[str, Any]:
             "stale": sum(1 for row in rows if bool(row.get("stale"))),
             "down": sum(1 for row in rows if not bool(row.get("statusOk"))),
         }
-
         live_payload = {
             "ok": True,
             "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),

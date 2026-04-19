@@ -151,7 +151,7 @@ risk:
   min_hold_bars: 3
   reentry_min_move_bps: 60.0
   reentry_require_price_at_or_below_last_entry: true
-  reentry_last_entry_tolerance_bps: 0.0
+  reentry_last_entry_tolerance_bps: 80.0
   reentry_cooldown_bars_after_trailing_stop: 24
   reentry_cooldown_bars_after_whipsaw_stop_loss: 8
   reentry_whipsaw_hard_stop_max_bars: 4
@@ -245,9 +245,9 @@ core:
   rate_limit_pause_sec: 2.0
   warmup:
     enabled: true
-    window_hours: 336.0
+    window_hours: 168.0
     min_bars: 720
-    max_bars: 20160
+    max_bars: 10080
     use_journal_db: true
     use_journal_json: true
     rest_backfill: true
@@ -255,12 +255,16 @@ core:
 policy:
   profit_corridor:
     enabled: true
-    window_bars: 20160
+    window_bars: 10080
     min_bars: 720
     max_entry_position_pct: 0.0
+    short_horizon_entry_guard_enabled: true
+    short_horizon_entry_window_bars: 1440
+    short_horizon_entry_min_bars: 720
+    short_horizon_no_buy_above_pct: 55.0
     fast_window_bars: 1440
     fast_min_bars: 240
-    fast_blend_weight: 0.35
+    fast_blend_weight: 0.0
     robust_range_enabled: true
     robust_low_pct: 2.0
     robust_high_pct: 98.0
@@ -269,7 +273,7 @@ policy:
     staged_entry_2_pct: 20.0
     staged_entry_3_pct: 30.0
     staged_entry_4_pct: 40.0
-    staged_no_buy_above_pct: 50.0
+    staged_no_buy_above_pct: 60.0
     staged_exit_step_pct: 10.0
     staged_hysteresis_pct: 0.75
     staged_exit_retrace_pct: 0.25

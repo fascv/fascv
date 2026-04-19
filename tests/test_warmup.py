@@ -3,6 +3,7 @@ import sqlite3
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 from trading.alpha.breakout import BreakoutAlpha, BreakoutConfig
 from trading.features.engine import FeatureEngine
@@ -93,6 +94,91 @@ class TestWarmup(unittest.TestCase):
             )
             out = alpha.predict(feature_engine.compute(next_event))
             self.assertNotEqual((out.meta or {}).get("breakout_state"), "warmup")
+
+    def test_warmup_replaces_stale_journal_with_fresh_rest_window(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = os.path.join(td, "journal.db")
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.execute(
+                    """
+                    CREATE TABLE events (
+                      id INTEGER PRIMARY KEY,
+                      ts TEXT,
+                      ts_unix REAL,
+                      event_type TEXT,
+                      payload_json TEXT
+                    )
+                    """
+                )
+                # Old/stale journal snapshot.
+                base = datetime(2026, 2, 1, 10, 0, tzinfo=timezone.utc)
+                for i, px in enumerate([100.0, 100.2, 100.4, 100.6]):
+                    ts = base + timedelta(minutes=i)
+                    payload = (
+                        "{"
+                        f"\"ts\":\"{ts.isoformat()}\","
+                        f"\"open\":{px},\"high\":{px},\"low\":{px},\"close\":{px},"
+                        "\"volume\":1.0,"
+                        "\"micro\":{\"spread_bps\":1.0}"
+                        "}"
+                    )
+                    conn.execute(
+                        "INSERT INTO events(ts, ts_unix, event_type, payload_json) VALUES (?,?,?,?)",
+                        (ts.isoformat(), ts.timestamp(), "market", payload),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+
+            cfg = {
+                "journal": {"db_path": db_path},
+                "data": {"default_micro": {"spread_bps": 2.0}},
+                "core": {
+                    "warmup": {
+                        "enabled": True,
+                        "window_hours": 0.0,
+                        "min_bars": 4,
+                        "rest_backfill": True,
+                        "use_journal_db": True,
+                        "use_journal_json": False,
+                        "journal_stale_max_sec": 60.0,
+                    }
+                },
+                "features": {"return_window": 1, "atr_window": 2, "volume_z_window": 2},
+                "alpha": {"type": "breakout", "breakout": {"lookback": 3}},
+                "md": {"interval_seconds": 60, "exchange": "binance"},
+            }
+
+            fresh_base = datetime.now(timezone.utc).replace(second=0, microsecond=0) - timedelta(minutes=3)
+            fresh_events = [
+                MarketEvent(
+                    ts=fresh_base + timedelta(minutes=i),
+                    open=200.0 + i * 0.1,
+                    high=200.0 + i * 0.1,
+                    low=200.0 + i * 0.1,
+                    close=200.0 + i * 0.1,
+                    volume=1.0,
+                    micro={"spread_bps": 1.0},
+                )
+                for i in range(4)
+            ]
+
+            feature_engine = FeatureEngine(return_window=1, atr_window=2, volume_z_window=2)
+            alpha = BreakoutAlpha(BreakoutConfig(lookback=3, trigger_bps=0.1, scale=1.0))
+
+            with mock.patch("trading.warmup._load_from_binance_rest", return_value=fresh_events) as rest_mock:
+                report = warmup_feature_and_alpha(cfg, feature_engine, alpha)
+
+            self.assertTrue(report.get("journal_stale_replaced"))
+            self.assertEqual(report.get("hydrated_bars"), 4)
+            self.assertEqual(report.get("start_ts"), fresh_events[0].ts.isoformat())
+            self.assertEqual(report.get("end_ts"), fresh_events[-1].ts.isoformat())
+            rest_mock.assert_called_once()
+            args, kwargs = rest_mock.call_args
+            # Need a full fresh window, not a "missing before oldest" backfill.
+            self.assertEqual(int(args[1]), 4)
+            self.assertIsNone(kwargs.get("end_before"))
 
 
 if __name__ == "__main__":

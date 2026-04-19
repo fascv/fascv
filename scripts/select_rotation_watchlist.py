@@ -61,6 +61,10 @@ EXCLUSION_ENV_VARS = ("ROTATION_EXCLUDED_BASE_SYMBOLS", "ROTATION_BLACKLIST_SYMB
 AUTO_BLACKLIST_DEFAULT_LEVEL = "mild"
 PERSISTENT_DOWNTREND_MIN_DAYS_DEFAULT = 21
 AUTO_BLACKLIST_LISTING_KLINE_LIMIT_DEFAULT = 3000
+AUTO_BLACKLIST_LISTING_DECAY_MIN_HISTORY_DAYS_DEFAULT = 120
+AUTO_BLACKLIST_LISTING_DECAY_MIN_DROP_FROM_START_PCT_DEFAULT = 40.0
+AUTO_BLACKLIST_LISTING_DECAY_MIN_DRAWDOWN_FROM_HIGH_PCT_DEFAULT = 60.0
+AUTO_BLACKLIST_LISTING_DECAY_MIN_SHARE_BELOW_START_PCT_DEFAULT = 85.0
 TOKEN_PREFILTER_BAD_TRADE_RISKS = {"honeypot"}
 TOKEN_PREFILTER_HIGH_RISK_FLAGS = {
     "all_snipers_honeypot",
@@ -577,6 +581,11 @@ def _listing_structure_metrics(symbol_listing_closes: list[float]) -> dict[str, 
     listing_high = max(series)
     ret_since_listing_pct = ((last / first) - 1.0) * 100.0
     drawdown_from_listing_high_pct = ((last / listing_high) - 1.0) * 100.0 if listing_high > 0.0 else 0.0
+    share_days_below_listing_start_pct = (
+        (sum(1 for value in series if float(value) < first) / float(len(series))) * 100.0
+        if series
+        else 0.0
+    )
     half = max(2, len(series) // 2)
     listing_high_shift_pct, listing_low_shift_pct = _range_shift_pct(
         series,
@@ -591,6 +600,7 @@ def _listing_structure_metrics(symbol_listing_closes: list[float]) -> dict[str, 
         "min_required_days": float(min_required_days),
         "ret_since_listing_pct": float(ret_since_listing_pct),
         "drawdown_from_listing_high_pct": float(drawdown_from_listing_high_pct),
+        "share_days_below_listing_start_pct": float(share_days_below_listing_start_pct),
         "listing_high_shift_pct": float(listing_high_shift_pct),
         "listing_low_shift_pct": float(listing_low_shift_pct),
     }
@@ -629,6 +639,38 @@ def _listing_structural_downdrift_block(
         return True, f"listing_structural_downdrift_{level}"
     if young_crash:
         return True, f"listing_young_crash_profile_{level}"
+    return False, ""
+
+
+def _listing_decay_profile_block(
+    listing_metrics: dict[str, float | bool | str],
+    *,
+    min_history_days: float,
+    min_drop_from_start_pct: float,
+    min_drawdown_from_high_pct: float,
+    min_share_below_start_pct: float,
+) -> tuple[bool, str]:
+    if not bool(listing_metrics.get("data_ok", False)):
+        return False, ""
+    history_days = float(listing_metrics.get("history_days", 0.0) or 0.0)
+    if history_days < float(min_history_days):
+        return False, ""
+    ret_since_listing_pct = float(listing_metrics.get("ret_since_listing_pct", 0.0) or 0.0)
+    drawdown_from_listing_high_pct = float(
+        listing_metrics.get("drawdown_from_listing_high_pct", 0.0) or 0.0
+    )
+    share_days_below_listing_start_pct = float(
+        listing_metrics.get("share_days_below_listing_start_pct", 0.0) or 0.0
+    )
+    drop_from_start_pct = max(0.0, -ret_since_listing_pct)
+    drawdown_abs_pct = max(0.0, -drawdown_from_listing_high_pct)
+    blocked = (
+        drop_from_start_pct >= float(min_drop_from_start_pct)
+        and drawdown_abs_pct >= float(min_drawdown_from_high_pct)
+        and share_days_below_listing_start_pct >= float(min_share_below_start_pct)
+    )
+    if blocked:
+        return True, "listing_structural_decay_profile"
     return False, ""
 
 
@@ -1038,6 +1080,34 @@ def _build_auto_blacklist(
         "ROTATION_AUTO_BLACKLIST_USE_LISTING_STRUCTURAL_BLOCK",
         "1",
     )
+    listing_decay_profile_enabled = _env_flag(
+        "ROTATION_AUTO_BLACKLIST_LISTING_DECAY_PROFILE_ENABLED",
+        "0",
+    )
+    listing_decay_min_history_days = _env_int(
+        "ROTATION_AUTO_BLACKLIST_LISTING_DECAY_MIN_HISTORY_DAYS",
+        AUTO_BLACKLIST_LISTING_DECAY_MIN_HISTORY_DAYS_DEFAULT,
+        minimum=30,
+        maximum=2000,
+    )
+    listing_decay_min_drop_from_start_pct = _env_float(
+        "ROTATION_AUTO_BLACKLIST_LISTING_DECAY_MIN_DROP_FROM_START_PCT",
+        AUTO_BLACKLIST_LISTING_DECAY_MIN_DROP_FROM_START_PCT_DEFAULT,
+        minimum=0.0,
+        maximum=99.0,
+    )
+    listing_decay_min_drawdown_from_high_pct = _env_float(
+        "ROTATION_AUTO_BLACKLIST_LISTING_DECAY_MIN_DRAWDOWN_FROM_HIGH_PCT",
+        AUTO_BLACKLIST_LISTING_DECAY_MIN_DRAWDOWN_FROM_HIGH_PCT_DEFAULT,
+        minimum=0.0,
+        maximum=99.0,
+    )
+    listing_decay_min_share_below_start_pct = _env_float(
+        "ROTATION_AUTO_BLACKLIST_LISTING_DECAY_MIN_SHARE_BELOW_START_PCT",
+        AUTO_BLACKLIST_LISTING_DECAY_MIN_SHARE_BELOW_START_PCT_DEFAULT,
+        minimum=0.0,
+        maximum=100.0,
+    )
     listing_kline_limit = _env_int(
         "ROTATION_AUTO_BLACKLIST_LISTING_KLINE_LIMIT",
         AUTO_BLACKLIST_LISTING_KLINE_LIMIT_DEFAULT,
@@ -1051,6 +1121,7 @@ def _build_auto_blacklist(
     now_ts = int(time.time())
     quote_asset_norm = str(quote_asset or DEFAULT_QUOTE_ASSET).strip().upper()
     scan_symbols_norm = _dedupe_symbols(scan_symbols, quote_asset=quote_asset_norm)
+    auto_blacklist_active = bool(enabled and (level != "off" or listing_decay_profile_enabled))
 
     cache = _load_auto_blacklist_cache(AUTO_BLACKLIST_CACHE_FILE)
     cache_generated_ts = int(cache.get("generated_at_ts") or 0)
@@ -1084,7 +1155,7 @@ def _build_auto_blacklist(
 
     refresh_reason = ""
     need_refresh = False
-    if enabled and level != "off":
+    if auto_blacklist_active:
         if force_refresh:
             need_refresh = True
             refresh_reason = "force_refresh"
@@ -1094,6 +1165,23 @@ def _build_auto_blacklist(
         elif cache_level != level:
             need_refresh = True
             refresh_reason = "level_changed"
+        elif bool(cache.get("listing_decay_profile_enabled", False)) != bool(
+            listing_decay_profile_enabled
+        ):
+            need_refresh = True
+            refresh_reason = "listing_decay_profile_mode_changed"
+        elif listing_decay_profile_enabled and (
+            int(cache.get("listing_decay_profile_min_history_days") or 0)
+            != int(listing_decay_min_history_days)
+            or float(cache.get("listing_decay_profile_min_drop_from_start_pct") or 0.0)
+            != float(listing_decay_min_drop_from_start_pct)
+            or float(cache.get("listing_decay_profile_min_drawdown_from_high_pct") or 0.0)
+            != float(listing_decay_min_drawdown_from_high_pct)
+            or float(cache.get("listing_decay_profile_min_share_below_start_pct") or 0.0)
+            != float(listing_decay_min_share_below_start_pct)
+        ):
+            need_refresh = True
+            refresh_reason = "listing_decay_profile_thresholds_changed"
         elif cache_schema_version != AUTO_BLACKLIST_CACHE_SCHEMA_VERSION:
             need_refresh = True
             refresh_reason = "cache_schema_changed"
@@ -1113,7 +1201,7 @@ def _build_auto_blacklist(
     refresh_failed_symbols: set[str] = set()
     entries_out: dict[str, dict[str, object]] = {}
 
-    if enabled and level != "off" and need_refresh:
+    if auto_blacklist_active and need_refresh:
         refreshed = True
         for symbol in scan_symbols_norm:
             market = f"{symbol}{quote_asset_norm}"
@@ -1129,15 +1217,21 @@ def _build_auto_blacklist(
                     btc_macro_closes,
                     level=level,
                 )
-                macro_blocked = bool(metrics.get("data_ok", False)) and bool(metrics.get("blocked", False))
+                macro_blocked = (
+                    level != "off"
+                    and bool(metrics.get("data_ok", False))
+                    and bool(metrics.get("blocked", False))
+                )
                 listing_metrics: dict[str, float | bool | str] = {
-                    "enabled": bool(use_listing_structural_block),
+                    "enabled": bool(use_listing_structural_block or listing_decay_profile_enabled),
                     "data_ok": False,
                     "reason": "disabled",
                 }
                 listing_blocked = False
                 listing_reason = ""
-                if use_listing_structural_block:
+                listing_decay_profile_blocked = False
+                listing_decay_profile_reason = ""
+                if use_listing_structural_block or listing_decay_profile_enabled:
                     try:
                         listing_klines = _get_klines(
                             market,
@@ -1148,16 +1242,33 @@ def _build_auto_blacklist(
                     except Exception:
                         symbol_listing_closes = list(symbol_macro_closes)
                     listing_metrics = _listing_structure_metrics(symbol_listing_closes)
+
+                if use_listing_structural_block and level != "off":
                     listing_blocked, listing_reason = _listing_structural_downdrift_block(
                         listing_metrics,
                         level=level,
                     )
+                if listing_decay_profile_enabled:
+                    (
+                        listing_decay_profile_blocked,
+                        listing_decay_profile_reason,
+                    ) = _listing_decay_profile_block(
+                        listing_metrics,
+                        min_history_days=float(listing_decay_min_history_days),
+                        min_drop_from_start_pct=float(listing_decay_min_drop_from_start_pct),
+                        min_drawdown_from_high_pct=float(listing_decay_min_drawdown_from_high_pct),
+                        min_share_below_start_pct=float(listing_decay_min_share_below_start_pct),
+                    )
 
-                if macro_blocked or listing_blocked:
+                if macro_blocked or listing_blocked or listing_decay_profile_blocked:
                     reason = (
                         f"persistent_downdrift_{level}"
                         if macro_blocked
-                        else (listing_reason or f"listing_structural_downdrift_{level}")
+                        else (
+                            listing_decay_profile_reason
+                            if listing_decay_profile_blocked
+                            else (listing_reason or f"listing_structural_downdrift_{level}")
+                        )
                     )
                     entries_out[symbol] = {
                         "symbol": symbol,
@@ -1165,6 +1276,8 @@ def _build_auto_blacklist(
                         "macro_blocked": bool(macro_blocked),
                         "listing_blocked": bool(listing_blocked),
                         "listing_block_reason": str(listing_reason or ""),
+                        "listing_decay_profile_blocked": bool(listing_decay_profile_blocked),
+                        "listing_decay_profile_reason": str(listing_decay_profile_reason or ""),
                         "ret180_pct": float(metrics.get("ret180_pct", 0.0) or 0.0),
                         "ret90_pct": float(metrics.get("ret90_pct", 0.0) or 0.0),
                         "rel180_pct": float(metrics.get("rel180_pct", 0.0) or 0.0),
@@ -1186,6 +1299,9 @@ def _build_auto_blacklist(
                         ),
                         "listing_drawdown_from_high_pct": float(
                             listing_metrics.get("drawdown_from_listing_high_pct", 0.0) or 0.0
+                        ),
+                        "listing_share_days_below_start_pct": float(
+                            listing_metrics.get("share_days_below_listing_start_pct", 0.0) or 0.0
                         ),
                         "listing_high_shift_pct": float(
                             listing_metrics.get("listing_high_shift_pct", 0.0) or 0.0
@@ -1219,6 +1335,17 @@ def _build_auto_blacklist(
             "downdrift_level": level,
             "enabled": True,
             "use_listing_structural_block": bool(use_listing_structural_block),
+            "listing_decay_profile_enabled": bool(listing_decay_profile_enabled),
+            "listing_decay_profile_min_history_days": int(listing_decay_min_history_days),
+            "listing_decay_profile_min_drop_from_start_pct": float(
+                listing_decay_min_drop_from_start_pct
+            ),
+            "listing_decay_profile_min_drawdown_from_high_pct": float(
+                listing_decay_min_drawdown_from_high_pct
+            ),
+            "listing_decay_profile_min_share_below_start_pct": float(
+                listing_decay_min_share_below_start_pct
+            ),
             "listing_kline_limit": int(listing_kline_limit),
             "scan_symbol_count": len(scan_symbols_norm),
             "scanned_symbols": scan_symbols_norm,
@@ -1230,13 +1357,25 @@ def _build_auto_blacklist(
         }
         _save_auto_blacklist_cache(AUTO_BLACKLIST_CACHE_FILE, payload)
     else:
-        for symbol, entry in cache_entries.items():
-            entries_out[symbol] = dict(entry)
+        if auto_blacklist_active:
+            for symbol, entry in cache_entries.items():
+                entries_out[symbol] = dict(entry)
 
     info: dict[str, object] = {
-        "enabled": bool(enabled and level != "off"),
+        "enabled": bool(auto_blacklist_active),
         "downdrift_level": level,
         "use_listing_structural_block": bool(use_listing_structural_block),
+        "listing_decay_profile_enabled": bool(listing_decay_profile_enabled),
+        "listing_decay_profile_min_history_days": int(listing_decay_min_history_days),
+        "listing_decay_profile_min_drop_from_start_pct": float(
+            listing_decay_min_drop_from_start_pct
+        ),
+        "listing_decay_profile_min_drawdown_from_high_pct": float(
+            listing_decay_min_drawdown_from_high_pct
+        ),
+        "listing_decay_profile_min_share_below_start_pct": float(
+            listing_decay_min_share_below_start_pct
+        ),
         "listing_kline_limit": int(listing_kline_limit),
         "refresh_forced": bool(force_refresh),
         "refresh_needed": bool(need_refresh),
@@ -1256,7 +1395,7 @@ def _build_auto_blacklist(
         "symbols": sorted(entries_out.keys()),
     }
 
-    if not enabled or level == "off":
+    if not auto_blacklist_active:
         return {}, info
     return entries_out, info
 

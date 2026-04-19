@@ -18,6 +18,12 @@ SPEC.loader.exec_module(relay_server)
 
 
 class TestRelayLiveCampaign(unittest.TestCase):
+    def test_translate_non_buy_reason_known_code(self) -> None:
+        self.assertEqual(
+            relay_server.translate_non_buy_reason("corridor_short_horizon_too_high"),
+            "Im 24h-Korridor schon zu weit oben",
+        )
+
     def test_normalize_trade_base_fee_not_double_counted(self) -> None:
         buy = relay_server.normalize_trade(
             "EURUSDC",
@@ -329,6 +335,66 @@ class TestRelayLiveCampaign(unittest.TestCase):
         self.assertEqual(row["symbol"], "ZRO")
         self.assertEqual(row["strategy"], "continuation")
         self.assertEqual(row["alphaType"], "continuation")
+
+    def test_load_rotation_live_exposes_german_gate_reason_and_raw_code(self) -> None:
+        payload = {
+            "selected": [],
+            "watch_symbols": ["AAVE"],
+            "all_rows": [
+                {
+                    "symbol": "AAVE",
+                    "market": "AAVEUSDC",
+                    "eligible": False,
+                    "score": 4.0,
+                    "gate_reason": "rule_entry_quality_volume",
+                }
+            ],
+        }
+
+        status_payload = {
+            "data": {
+                "core": {
+                    "position_btc": 0.0,
+                    "avg_entry_price": 0.0,
+                    "mark_price": 181.5,
+                    "realized_pnl_eur": 0.0,
+                    "unrealized_pnl_eur": 0.0,
+                    "trading_enabled": True,
+                },
+                "exec": {"open_orders_count": 0},
+            },
+            "aggregate": {
+                "open_orders_count": 0,
+                "trading_enabled": True,
+            },
+            "staleness_sec_by_process": {"core": 0.1, "exec": 0.1, "md": 0.1},
+            "stale_warn_sec": 12.0,
+            "overview_trade_ready": False,
+            "updated_at": "2026-04-19T10:00:00Z",
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            active_file = Path(tmp) / "rotation_active_lanes.json"
+            active_file.write_text(json.dumps(payload), encoding="utf-8")
+            old_active_file = relay_server.ROTATION_ACTIVE_FILE
+            old_cache = relay_server._ROTATION_LIVE_CACHE
+            try:
+                relay_server.ROTATION_ACTIVE_FILE = str(active_file)
+                relay_server._ROTATION_LIVE_CACHE = None
+                with (
+                    mock.patch.object(relay_server, "load_rotation_meta_summary", return_value={"available": False}),
+                    mock.patch.object(relay_server, "list_running_rotation_symbols", return_value=["AAVE"]),
+                    mock.patch.object(relay_server, "load_rotation_lane_ports", return_value={"AAVE": 8402}),
+                    mock.patch.object(relay_server, "fetch_local_json", return_value=status_payload),
+                ):
+                    live = relay_server.load_rotation_live()
+            finally:
+                relay_server.ROTATION_ACTIVE_FILE = old_active_file
+                relay_server._ROTATION_LIVE_CACHE = old_cache
+
+        row = live["rows"][0]
+        self.assertEqual(row["gateReasonCode"], "rule_entry_quality_volume")
+        self.assertEqual(row["gateReason"], "Volumen fuer den Einstieg zu niedrig")
 
     def test_load_rotation_live_recovers_entry_opened_at_for_running_unselected_lane(self) -> None:
         payload = {

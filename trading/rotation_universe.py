@@ -155,7 +155,73 @@ SHADOW_PHASE_A_POOL: tuple[str, ...] = (
     "S",
 )
 
-POOL: tuple[str, ...] = BASE_POOL + EXTRA_POOL + BOOST_POOL_24H + SHADOW_PHASE_A_POOL
+# Curated universe (52 symbols): ZRO-like long-horizon set with Seed-tagged
+# markets removed.
+POOL: tuple[str, ...] = (
+    "ZRO",
+    "BTC",
+    "BNB",
+    "BCH",
+    "ETH",
+    "SOL",
+    "CHZ",
+    "LTC",
+    "TRX",
+    "XRP",
+    "LINK",
+    "CAKE",
+    "TAO",
+    "ZEN",
+    "XTZ",
+    "QNT",
+    "XLM",
+    "DOGE",
+    "AAVE",
+    "ALGO",
+    "ETHFI",
+    "UNI",
+    "TRB",
+    "NEAR",
+    "PUNDIX",
+    "HBAR",
+    "NEO",
+    "SHIB",
+    "ATOM",
+    "CRV",
+    "TON",
+    "POL",
+    "ICP",
+    "AVAX",
+    "GMX",
+    "RENDER",
+    "VIRTUAL",
+    "ADA",
+    "STEEM",
+    "T",
+    "PEPE",
+    "CFX",
+    "LDO",
+    "KAIA",
+    "API3",
+    "SUI",
+    "PENDLE",
+    "BONK",
+    "WLD",
+    "STRK",
+    "PAXG",
+    "SEI",
+)
+
+# Symbols that stay outside the trading universe but can be kept alive as
+# exit-only lanes for automated position unwind.
+EXIT_ONLY_MANAGED_SYMBOLS: tuple[str, ...] = (
+    "SIGN",
+    "WLFI",
+)
+
+# Lane pool used by runtime/service orchestration. Includes the universe plus
+# optional managed exit-only symbols.
+LANE_POOL: tuple[str, ...] = tuple(dict.fromkeys((*POOL, *EXIT_ONLY_MANAGED_SYMBOLS)))
 
 # Keep lane ports clear of globally shared local services.
 RESERVED_PORTS: frozenset[int] = frozenset({8940})
@@ -215,21 +281,39 @@ LEGACY_PORTS: dict[str, tuple[int, int, int, int, int]] = {
 
 
 def build_ports(pool: Iterable[str] | None = None) -> dict[str, tuple[int, int, int, int, int]]:
-    ports = dict(LEGACY_PORTS)
-    extra_idx = 0
-    for symbol in (pool or POOL):
+    symbols = [str(symbol).upper() for symbol in (pool or POOL)]
+    ports: dict[str, tuple[int, int, int, int, int]] = {}
+    used_ports: set[int] = set()
+
+    for symbol in symbols:
+        if symbol in LEGACY_PORTS:
+            lane_ports = LEGACY_PORTS[symbol]
+            ports[symbol] = lane_ports
+            used_ports.update(int(port) for port in lane_ports)
+
+    next_control = 8206
+    next_exec = 13310
+    for symbol in symbols:
         if symbol in ports:
             continue
-        control = 8206 + (extra_idx * 2)
-        exec_port = 13310 + (extra_idx * 100)
-        ports[str(symbol).upper()] = (
-            control,
-            exec_port,
-            exec_port + 10,
-            exec_port + 20,
-            exec_port + 30,
-        )
-        extra_idx += 1
+        while True:
+            lane_ports = (
+                int(next_control),
+                int(next_exec),
+                int(next_exec + 10),
+                int(next_exec + 20),
+                int(next_exec + 30),
+            )
+            next_control += 2
+            next_exec += 100
+            if RESERVED_PORTS.intersection(lane_ports):
+                continue
+            if any(port in used_ports for port in lane_ports):
+                continue
+            ports[symbol] = lane_ports
+            used_ports.update(int(port) for port in lane_ports)
+            break
+
     for symbol, lane_ports in ports.items():
         overlap = RESERVED_PORTS.intersection(lane_ports)
         if overlap:
@@ -242,7 +326,7 @@ PORTS: dict[str, tuple[int, int, int, int, int]] = build_ports(POOL)
 
 
 def build_lanes(pool: Iterable[str] | None = None) -> dict[str, dict[str, object]]:
-    symbols = [str(symbol).upper() for symbol in (pool or POOL)]
+    symbols = [str(symbol).upper() for symbol in (pool or LANE_POOL)]
     ports = build_ports(symbols)
     lanes: dict[str, dict[str, object]] = {}
     for symbol in symbols:

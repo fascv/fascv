@@ -30,8 +30,29 @@ def _cfg(cfg: Dict[str, Any], path: str, default: Any) -> Any:
     return cur
 
 
+def _resolve_mp_start_method(cfg: Dict[str, Any]) -> str:
+    allowed = {"spawn", "fork", "forkserver"}
+    raw = str(os.getenv("TRADING_MP_START_METHOD", _cfg(cfg, "ipc.mp_start_method", "")) or "").strip().lower()
+    if raw in allowed:
+        return raw
+    if sys.platform.startswith("linux"):
+        return "fork"
+    return "spawn"
+
+
+def _exec_process_enabled(cfg: Dict[str, Any]) -> bool:
+    raw = _cfg(cfg, "exec.enabled", True)
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _make_context(cfg: Dict[str, Any], mode: str) -> tuple[ProcessContext, Any]:
-    mp_ctx = get_context("spawn")
+    start_method = _resolve_mp_start_method(cfg)
+    try:
+        mp_ctx = get_context(start_method)
+    except Exception:
+        mp_ctx = get_context("spawn")
     stop_event = mp_ctx.Event()
 
     q_market_core = mp_ctx.Queue(maxsize=int(_cfg(cfg, "ipc.market_queue_size", 1)))
@@ -140,7 +161,8 @@ def _start_processes(ctx: ProcessContext, mp_ctx: Any) -> List[Any]:
     processes = []
     processes.append(mp_ctx.Process(target=run_md, args=(ctx,), name="md"))
     processes.append(mp_ctx.Process(target=run_core, args=(ctx,), name="core"))
-    processes.append(mp_ctx.Process(target=run_exec, args=(ctx,), name="exec"))
+    if _exec_process_enabled(ctx.config):
+        processes.append(mp_ctx.Process(target=run_exec, args=(ctx,), name="exec"))
     processes.append(mp_ctx.Process(target=run_journal, args=(ctx,), name="journal"))
     if bool(_cfg(ctx.config, "impact.enabled", False)):
         processes.append(mp_ctx.Process(target=run_impact, args=(ctx,), name="impact"))
@@ -225,8 +247,13 @@ def main() -> None:
     for name, proc in procs.items():
         _debug_log(debug_watchdog, f"started {name} pid={proc.pid}")
 
-    critical = {"md", "core", "exec"}
-    base_names = ["md", "core", "exec", "journal", "control"]
+    exec_enabled = _exec_process_enabled(cfg)
+    critical = {"md", "core"}
+    if exec_enabled:
+        critical.add("exec")
+    base_names = ["md", "core", "journal", "control"]
+    if exec_enabled:
+        base_names.append("exec")
     if bool(_cfg(cfg, "impact.enabled", False)):
         base_names.append("impact")
     last_hb: Dict[str, float] = {name: time.time() for name in base_names}

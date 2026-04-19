@@ -174,7 +174,7 @@
 
     const base = fromMarket.base || fromSymbol.base;
     const quote = fromMarket.quote || fromSymbol.quote || 'USDC';
-    if (!base || base.length < 2) return escapeHtml(label);
+    if (!base) return escapeHtml(label);
 
     const href = `https://www.binance.com/en/trade/${encodeURIComponent(base)}_${encodeURIComponent(quote)}?type=spot`;
     return `<a href="${href}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`;
@@ -371,7 +371,7 @@
       item?.statusOk ? 0 : 1,
       item?.stale ? 1 : 0,
       -Number(item?.score || 0),
-      String(item?.gateReason || ''),
+      String(item?.gateReasonCode || item?.gateReason || ''),
       String(item?.symbol || ''),
     ];
   }
@@ -381,17 +381,18 @@
   }
 
   function liveBlockReasonText(item) {
-    const gate = String(item?.gateReason || '').trim();
+    const gateCode = String(item?.gateReasonCode || '').trim();
+    const gateText = String(item?.gateReason || '').trim();
     if (!item?.statusOk) return item?.statusError || 'Lane nicht erreichbar';
-    if (!gate) {
-      if (item?.manualEntryExitOnly) return 'Nur manuelles Entry erlaubt';
+    if (!gateCode && !gateText) {
+      if (item?.manualEntryExitOnly) return 'Nur manueller Einstieg erlaubt';
       if (!item?.tradingEnabled) return 'Trading deaktiviert';
-      return 'Aktuell kein Kauf-Trigger';
+      return 'Aktuell kein Kaufsignal';
     }
-    if (gate === 'rule_7d_crash_event') {
+    if (gateCode === 'rule_7d_crash_event') {
       return 'In den letzten 7 Tagen gab es einen starken Kurssturz';
     }
-    if (gate === 'rule_not_in_lower_quarter') {
+    if (gateCode === 'rule_not_in_lower_quarter') {
       const pos7d = Number(item?.selectorPos7dPct);
       if (Number.isFinite(pos7d)) {
         return `Noch zu hoch in der 7d-Range (${fmtPctValue(pos7d, 1)})`;
@@ -410,11 +411,11 @@
       }
       return 'Noch zu hoch in der 7d-Range (Wert wird aktualisiert)';
     }
-    if (gate === 'data_pending') return 'Daten werden noch aktualisiert';
-    if (gate === 'rule_3day_cycle_miss') return '3-Tage-Zyklus noch nicht passend';
-    if (gate === 'rule_micro_valley_context_miss') return 'Micro-Valley-Bedingung fehlt';
-    if (gate === 'rule_not_rising_yet') return 'Bewegung steigt noch nicht';
-    return gate;
+    if (gateCode === 'data_pending') return 'Daten werden noch aktualisiert';
+    if (gateCode === 'rule_3day_cycle_miss') return '3-Tage-Zyklus noch nicht passend';
+    if (gateCode === 'rule_micro_valley_context_miss') return 'Kleiner Talboden fehlt';
+    if (gateCode === 'rule_not_rising_yet') return 'Bewegung steigt noch nicht';
+    return gateText || gateCode;
   }
 
   function clearRotation() {
@@ -433,6 +434,8 @@
     strategyMetaEl.innerHTML = 'Meta-Stand: -';
     if (inTradeRows) inTradeRows.innerHTML = '';
     if (inTradeMetaEl) inTradeMetaEl.innerHTML = 'Im Trade: -';
+    setAllUsdcPairs([]);
+    setZroLikePairs(null);
     setLiveStatus('');
   }
 
@@ -971,16 +974,24 @@
     const padX = 4;
     const padY = 6;
     const midY = height / 2;
+    const hourMarkerCount = 9;
     const series = Array.isArray(rawSeries)
       ? rawSeries
         .map((v) => Number(v))
         .filter((v) => Number.isFinite(v))
       : [];
+    const innerWidth = width - (padX * 2);
+    const hourMarkers = Array.from({ length: hourMarkerCount }, (_, idx) => {
+      const step = (idx + 1) / (hourMarkerCount + 1);
+      const x = padX + (innerWidth * step);
+      return `<line class="trend-hourline" x1="${x.toFixed(2)}" y1="${padY}" x2="${x.toFixed(2)}" y2="${height - padY}"></line>`;
+    }).join('');
 
     if (!series.length) {
       return `
         <div class="intrade-chart-wrap">
           <svg class="trend-spark" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">
+            ${hourMarkers}
             <line class="trend-midline" x1="${padX}" y1="${midY}" x2="${width - padX}" y2="${midY}"></line>
           </svg>
         </div>
@@ -988,7 +999,6 @@
     }
 
     const absMax = Math.max(0.05, ...series.map((value) => Math.abs(value)));
-    const innerWidth = width - (padX * 2);
     const amplitude = (height / 2) - padY;
     const den = Math.max(1, series.length - 1);
     const effectiveWindowMin = Number.isFinite(Number(windowMin)) && Number(windowMin) > 0
@@ -1017,6 +1027,7 @@
     return `
       <div class="intrade-chart-wrap">
         <svg class="trend-spark" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">
+          ${hourMarkers}
           <line class="trend-midline" x1="${padX}" y1="${midY}" x2="${width - padX}" y2="${midY}"></line>
           <path class="${cls}" d="${path}"></path>
         </svg>

@@ -98,6 +98,21 @@ def estimate_warmup_bars(cfg: Dict[str, Any]) -> int:
     return max(0, min(max_bars, need))
 
 
+def _warmup_journal_stale_max_sec(cfg: Dict[str, Any]) -> float:
+    raw = _cfg(cfg, "core.warmup.journal_stale_max_sec", None)
+    if raw is None:
+        interval_sec = max(1, int(_cfg(cfg, "md.interval_seconds", 300)))
+        # Default: if journal market data is older than ~15 bars (but at least 5min),
+        # treat it as stale and rebuild from fresh exchange history.
+        return float(max(300, interval_sec * 15))
+    try:
+        value = float(raw)
+    except Exception:
+        interval_sec = max(1, int(_cfg(cfg, "md.interval_seconds", 300)))
+        return float(max(300, interval_sec * 15))
+    return max(0.0, value)
+
+
 def _event_from_payload(payload: Dict[str, Any], default_micro: Dict[str, float], ts_fallback: Any = None) -> Optional[MarketEvent]:
     ts = _to_dt(payload.get("ts")) or _to_dt(ts_fallback)
     if ts is None:
@@ -314,13 +329,31 @@ def warmup_feature_and_alpha(cfg: Dict[str, Any], feature_engine: Any, alpha_mod
 
     exchange = str(_cfg(cfg, "md.exchange", _cfg(cfg, "live.exchange", "kraken"))).strip().lower()
     rest_backfill = bool(_cfg(cfg, "core.warmup.rest_backfill", True))
-    if exchange == "binance" and rest_backfill and len(collected) < needed:
-        missing = needed - len(collected)
-        oldest_ts = collected[0].ts if collected else None
-        from_rest = _load_from_binance_rest(cfg, missing, default_micro, end_before=oldest_ts)
-        source_counts["binance_rest"] = len(from_rest)
-        collected.extend(from_rest)
-        collected = _dedupe_and_trim(collected, needed)
+    journal_stale_max_sec = _warmup_journal_stale_max_sec(cfg)
+    journal_latest_age_sec: Optional[float] = None
+    journal_stale = False
+    if collected:
+        latest_ts = collected[-1].ts
+        journal_latest_age_sec = max(0.0, (datetime.now(timezone.utc) - latest_ts).total_seconds())
+        if journal_stale_max_sec > 0.0 and journal_latest_age_sec > journal_stale_max_sec:
+            journal_stale = True
+
+    stale_journal_replaced = False
+    if exchange == "binance" and rest_backfill:
+        if journal_stale:
+            from_rest = _load_from_binance_rest(cfg, needed, default_micro, end_before=None)
+            source_counts["binance_rest"] = len(from_rest)
+            if from_rest:
+                stale_journal_replaced = True
+                source_counts["stale_journal_replaced_bars"] = len(collected)
+                collected = _dedupe_and_trim(from_rest, needed)
+        elif len(collected) < needed:
+            missing = needed - len(collected)
+            oldest_ts = collected[0].ts if collected else None
+            from_rest = _load_from_binance_rest(cfg, missing, default_micro, end_before=oldest_ts)
+            source_counts["binance_rest"] = len(from_rest)
+            collected.extend(from_rest)
+            collected = _dedupe_and_trim(collected, needed)
 
     hydrated = 0
     for ev in collected:
@@ -336,6 +369,9 @@ def warmup_feature_and_alpha(cfg: Dict[str, Any], feature_engine: Any, alpha_mod
         "required_bars": int(needed),
         "hydrated_bars": int(hydrated),
         "source_counts": source_counts,
+        "journal_stale_replaced": bool(stale_journal_replaced),
+        "journal_stale_max_sec": float(journal_stale_max_sec),
+        "journal_latest_age_sec": journal_latest_age_sec,
         "start_ts": collected[0].ts.isoformat() if collected else None,
         "end_ts": collected[-1].ts.isoformat() if collected else None,
         "_close_prices": [float(ev.close) for ev in collected],

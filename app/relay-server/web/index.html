@@ -78,6 +78,7 @@
     .strategy-live { grid-column: span 12; }
     .symbols { grid-column: span 12; }
     .bundles { grid-column: span 12; }
+    .usdc-pairs { grid-column: span 12; }
 
     @media (min-width: 980px) {
       .rotation { grid-column: span 8; }
@@ -86,6 +87,7 @@
       .trades { grid-column: span 12; }
       .symbols { grid-column: span 12; }
       .bundles { grid-column: span 12; }
+      .usdc-pairs { grid-column: span 12; }
     }
 
     .control-row {
@@ -231,6 +233,32 @@
     .small {
       font-size: 12px;
       color: var(--muted);
+    }
+
+    .pair-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 8px;
+      margin-top: 8px;
+    }
+
+    .pair-link {
+      display: inline-block;
+      padding: 4px 8px;
+      border: 1px solid #3a3a3a;
+      border-radius: 999px;
+      background: rgba(20, 20, 20, 0.55);
+      color: var(--gold-2);
+      text-decoration: none;
+      font-size: 12px;
+      line-height: 1.2;
+      white-space: nowrap;
+    }
+
+    .pair-link:hover {
+      border-color: var(--gold);
+      color: var(--gold);
+      text-decoration: underline;
     }
 
     .badge {
@@ -396,6 +424,63 @@
       border-top: 1px solid #333;
     }
 
+    .live .live-candidate-details {
+      border: 1px solid #353535;
+      border-radius: 10px;
+      background: rgba(20, 20, 20, 0.38);
+      overflow: hidden;
+    }
+
+    .live .live-candidate-summary {
+      list-style: none;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 12px;
+      cursor: pointer;
+      user-select: none;
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .live .live-candidate-summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .live .live-candidate-summary::after {
+      content: "▾";
+      color: var(--gold-2);
+      font-size: 14px;
+      line-height: 1;
+      flex: 0 0 auto;
+    }
+
+    .live .live-candidate-details:not([open]) .live-candidate-summary::after {
+      content: "▸";
+    }
+
+    .live .live-candidate-summary-main {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .live .live-candidate-summary-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .live .live-candidate-summary-note {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .live .live-candidate-body {
+      padding-top: 6px;
+    }
+
     .live .live-candidate-table {
       width: 100%;
       min-width: 100%;
@@ -447,6 +532,12 @@
       stroke-width: 1;
       stroke-dasharray: 4 3;
       opacity: 0.85;
+    }
+
+    .trend-hourline {
+      stroke: rgba(255, 255, 255, 0.22);
+      stroke-width: 1;
+      stroke-dasharray: 2 4;
     }
 
     .trend-line-up {
@@ -735,26 +826,36 @@
           </table>
         </div>
         <div id="liveCandidateBlock" class="live-candidate-block" style="display:none;">
-          <div id="liveCandidateMeta" class="small" style="margin-bottom:6px;"></div>
-          <div class="table-wrap-live">
-            <table class="live-candidate-table">
-              <colgroup>
-                <col class="live-cand-col-symbol">
-                <col class="live-cand-col-status">
-                <col class="live-cand-col-reason">
-                <col class="live-cand-col-stand">
-              </colgroup>
-              <thead>
-                <tr>
-                  <th>Kandidat</th>
-                  <th>Status</th>
-                  <th>Grund (noch kein Kauf)</th>
-                  <th>Stand</th>
-                </tr>
-              </thead>
-              <tbody id="liveCandidateRows"></tbody>
-            </table>
-          </div>
+          <details class="live-candidate-details" open>
+            <summary class="live-candidate-summary">
+              <span class="live-candidate-summary-main">
+                <span class="live-candidate-summary-title">Kandidatenliste</span>
+                <span class="live-candidate-summary-note">Auf- und zuklappbar</span>
+              </span>
+              <span id="liveCandidateMeta" class="small">-</span>
+            </summary>
+            <div class="live-candidate-body">
+              <div class="table-wrap-live">
+                <table class="live-candidate-table">
+                  <colgroup>
+                    <col class="live-cand-col-symbol">
+                    <col class="live-cand-col-status">
+                    <col class="live-cand-col-reason">
+                    <col class="live-cand-col-stand">
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      <th>Kandidat</th>
+                      <th>Status</th>
+                      <th>Grund (noch kein Kauf)</th>
+                      <th>Stand</th>
+                    </tr>
+                  </thead>
+                  <tbody id="liveCandidateRows"></tbody>
+                </table>
+              </div>
+            </div>
+          </details>
         </div>
       </section>
 
@@ -871,9 +972,10 @@
           </table>
         </div>
       </section>
+
     </div>
   </div>
 
-  <script src="/static/app.js?v=20260321k"></script>
+  <script src="/static/app.js?v=20260419b"></script>
 </body>
 </html>

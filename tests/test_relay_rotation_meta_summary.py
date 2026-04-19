@@ -87,6 +87,8 @@ class TestRelayRotationMetaSummary(unittest.TestCase):
         self.assertEqual(continuation["action"]["slotTarget"], 2)
         self.assertEqual(continuation["watchTopSymbols"], ["FET", "LDO"])
         self.assertEqual(continuation["universeTopSymbols"], ["FET", "LDO", "CFX"])
+        self.assertEqual(continuation["dominantGateReasons"], {"Struktur kommt nicht voran": 2})
+        self.assertEqual(continuation["dominantGateReasonCodes"], {"structure_stall": 2})
         self.assertEqual(
             [item["strategy"] for item in summary["rows"]],
             ["staircase", "continuation", "breakout", "rebound"],

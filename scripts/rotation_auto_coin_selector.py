@@ -1009,6 +1009,22 @@ def _profile_values(name: str) -> dict[str, float | int]:
         ("ROTATION_CORRIDOR_ROBUST_RANGE_ENABLED", "corridor_robust_range_enabled"),
         ("ROTATION_CORRIDOR_ROBUST_LOW_PCT", "corridor_robust_low_pct"),
         ("ROTATION_CORRIDOR_ROBUST_HIGH_PCT", "corridor_robust_high_pct"),
+        (
+            "ROTATION_CORRIDOR_SHORT_HORIZON_ENTRY_GUARD_ENABLED",
+            "corridor_short_horizon_entry_guard_enabled",
+        ),
+        (
+            "ROTATION_CORRIDOR_SHORT_HORIZON_ENTRY_WINDOW_BARS",
+            "corridor_short_horizon_entry_window_bars",
+        ),
+        (
+            "ROTATION_CORRIDOR_SHORT_HORIZON_ENTRY_MIN_BARS",
+            "corridor_short_horizon_entry_min_bars",
+        ),
+        (
+            "ROTATION_CORRIDOR_SHORT_HORIZON_NO_BUY_ABOVE_PCT",
+            "corridor_short_horizon_no_buy_above_pct",
+        ),
         ("ROTATION_FEATURE_CONTEXT_WINDOW_BARS", "feature_context_window_bars"),
         ("ROTATION_SAFETY_EXITS_ENABLED", "safety_exits_enabled"),
         ("ROTATION_REQUIRE_BREAK_EVEN_FOR_EXIT", "require_break_even_for_exit"),
@@ -1108,14 +1124,18 @@ def _profile_values(name: str) -> dict[str, float | int]:
     profile.setdefault("corridor_staged_profit_auto_width_offset", 0.02)
     profile.setdefault("corridor_staged_profit_auto_min_pct", 0.35)
     profile.setdefault("corridor_staged_profit_auto_max_pct", 1.40)
-    profile.setdefault("corridor_window_bars", 4320.0)
+    profile.setdefault("corridor_window_bars", 10080.0)
     profile.setdefault("corridor_min_bars", 720.0)
     profile.setdefault("corridor_fast_window_bars", 1440.0)
     profile.setdefault("corridor_fast_min_bars", 240.0)
-    profile.setdefault("corridor_fast_blend_weight", 0.35)
+    profile.setdefault("corridor_fast_blend_weight", 0.0)
     profile.setdefault("corridor_robust_range_enabled", 1.0)
     profile.setdefault("corridor_robust_low_pct", 2.0)
     profile.setdefault("corridor_robust_high_pct", 98.0)
+    profile.setdefault("corridor_short_horizon_entry_guard_enabled", 1.0)
+    profile.setdefault("corridor_short_horizon_entry_window_bars", 1440.0)
+    profile.setdefault("corridor_short_horizon_entry_min_bars", 720.0)
+    profile.setdefault("corridor_short_horizon_no_buy_above_pct", 55.0)
     swing_buy_band, swing_sell_band = _sanitize_swing_bands(
         profile.get("swing_buy_band"),
         profile.get("swing_sell_band"),
@@ -2817,7 +2837,7 @@ def _set_fraction(
         corridor_staged_profit_target_base_pct = auto_base_pct
     corridor_fast_blend_weight = max(
         0.0,
-        min(1.0, float(profile.get("corridor_fast_blend_weight", 0.35) or 0.35)),
+        min(1.0, float(profile.get("corridor_fast_blend_weight", 0.35))),
     )
     corridor_robust_range_enabled = bool(
         int(float(profile.get("corridor_robust_range_enabled", 1.0) or 1.0))
@@ -2915,6 +2935,32 @@ def _set_fraction(
         max(6.0, float(profile.get("corridor_fast_min_bars", 240.0) or 240.0))
     )
     corridor_fast_min_bars_base = min(corridor_fast_min_bars_base, corridor_fast_window_bars_base)
+    corridor_short_horizon_entry_guard_enabled = bool(
+        int(float(profile.get("corridor_short_horizon_entry_guard_enabled", 1.0) or 1.0))
+    )
+    corridor_short_horizon_entry_window_bars_base = int(
+        max(
+            12.0,
+            float(profile.get("corridor_short_horizon_entry_window_bars", 1440.0) or 1440.0),
+        )
+    )
+    corridor_short_horizon_entry_min_bars_base = int(
+        max(
+            6.0,
+            float(profile.get("corridor_short_horizon_entry_min_bars", 720.0) or 720.0),
+        )
+    )
+    corridor_short_horizon_entry_min_bars_base = min(
+        corridor_short_horizon_entry_min_bars_base,
+        corridor_short_horizon_entry_window_bars_base,
+    )
+    corridor_short_horizon_no_buy_above_pct = max(
+        0.0,
+        min(
+            100.0,
+            float(profile.get("corridor_short_horizon_no_buy_above_pct", 55.0) or 55.0),
+        ),
+    )
     scaled_profit_corridor_window_bars = _scaled_bars_for_interval(
         corridor_window_bars_base,
         md_interval_seconds,
@@ -2934,6 +2980,16 @@ def _set_fraction(
         corridor_fast_min_bars_base,
         md_interval_seconds,
         minimum=max(6, corridor_fast_min_bars_base),
+    )
+    scaled_profit_corridor_short_horizon_entry_window_bars = _scaled_bars_for_interval(
+        corridor_short_horizon_entry_window_bars_base,
+        md_interval_seconds,
+        minimum=max(12, corridor_short_horizon_entry_window_bars_base),
+    )
+    scaled_profit_corridor_short_horizon_entry_min_bars = _scaled_bars_for_interval(
+        corridor_short_horizon_entry_min_bars_base,
+        md_interval_seconds,
+        minimum=max(6, corridor_short_horizon_entry_min_bars_base),
     )
     warmup_window_hours = max(72.0, float(corridor_window_bars_base) / 60.0)
     scaled_warmup_min_target = max(120, min(3000, corridor_min_bars_base))
@@ -3656,6 +3712,19 @@ def _set_fraction(
             lines.append(f"    min_bars: {scaled_profit_corridor_min_bars}")
         elif section == "policy" and in_policy_profit_corridor and stripped.startswith("max_entry_position_pct:"):
             lines.append("    max_entry_position_pct: 0.0")
+            lines.append(
+                "    short_horizon_entry_guard_enabled: "
+                + ("true" if corridor_short_horizon_entry_guard_enabled else "false")
+            )
+            lines.append(
+                f"    short_horizon_entry_window_bars: {scaled_profit_corridor_short_horizon_entry_window_bars}"
+            )
+            lines.append(
+                f"    short_horizon_entry_min_bars: {scaled_profit_corridor_short_horizon_entry_min_bars}"
+            )
+            lines.append(
+                f"    short_horizon_no_buy_above_pct: {corridor_short_horizon_no_buy_above_pct}"
+            )
             lines.append(f"    fast_window_bars: {scaled_profit_corridor_fast_window_bars}")
             lines.append(f"    fast_min_bars: {scaled_profit_corridor_fast_min_bars}")
             lines.append(f"    fast_blend_weight: {corridor_fast_blend_weight}")
@@ -3715,6 +3784,8 @@ def _set_fraction(
                 f"    staged_profit_target_mult_50: {corridor_staged_profit_target_mult_50}"
             )
         elif section == "policy" and in_policy_profit_corridor and stripped.startswith("staged_"):
+            continue
+        elif section == "policy" and in_policy_profit_corridor and stripped.startswith("short_horizon_"):
             continue
         elif section == "policy" and in_policy_profit_corridor and stripped.startswith("fast_"):
             continue
@@ -3806,6 +3877,10 @@ def _simple_swing_selector_mode_enabled() -> bool:
 
 def _selector_bypass_watch_pool_enabled() -> bool:
     return _env_flag("ROTATION_SELECTOR_BYPASS_WATCH_POOL", default=False)
+
+
+def _watch_all_pool_enabled() -> bool:
+    return _env_flag("ROTATION_SELECTOR_WATCH_ALL_POOL", default=False)
 
 
 def _macro_fraction_adjust_enabled() -> bool:
@@ -4398,8 +4473,6 @@ def _simple_swing_entry_ready(row: dict) -> bool:
         return False
     if _simple_swing_recent_crash_gate_reason(row):
         return False
-    if _simple_swing_position_pct(row) > (_simple_swing_buy_band() * 100.0):
-        return False
     if _simple_swing_micro_valley_gate_reason(row):
         return False
     if not _simple_swing_is_rising(row):
@@ -4424,8 +4497,6 @@ def _simple_swing_gate_reason(row: dict) -> str:
     crash_reason = _simple_swing_recent_crash_gate_reason(row)
     if crash_reason:
         return crash_reason
-    if _simple_swing_position_pct(row) > (_simple_swing_buy_band() * 100.0):
-        return "rule_not_in_lower_quarter"
     micro_valley_reason = _simple_swing_micro_valley_gate_reason(row)
     if micro_valley_reason:
         return micro_valley_reason
@@ -6164,6 +6235,10 @@ def build_selector_payload(
                 fixed_watch_symbols.append(symbol)
                 fixed_watch_set.add(symbol)
         watch_symbols = fixed_watch_symbols
+    if _watch_all_pool_enabled():
+        # Two-level mode: keep every universe symbol running in watch, while
+        # selected slots alone control automatic new entries.
+        watch_symbols = [symbol for symbol in POOL if symbol in PORTS]
     if not watch_symbols:
         watch_symbols = list(selected)
 

@@ -151,7 +151,7 @@ risk:
   min_hold_bars: 3
   reentry_min_move_bps: 60.0
   reentry_require_price_at_or_below_last_entry: true
-  reentry_last_entry_tolerance_bps: 0.0
+  reentry_last_entry_tolerance_bps: 80.0
   reentry_cooldown_bars_after_trailing_stop: 24
   reentry_cooldown_bars_after_whipsaw_stop_loss: 8
   reentry_whipsaw_hard_stop_max_bars: 4
@@ -269,7 +269,7 @@ policy:
     staged_entry_2_pct: 20.0
     staged_entry_3_pct: 30.0
     staged_entry_4_pct: 40.0
-    staged_no_buy_above_pct: 50.0
+    staged_no_buy_above_pct: 60.0
     staged_exit_step_pct: 10.0
     staged_hysteresis_pct: 0.75
     staged_exit_retrace_pct: 0.25

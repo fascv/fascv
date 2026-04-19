@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 import threading
 import time
@@ -270,6 +271,19 @@ def _safe_float(raw: Any, default: float = 0.0) -> float:
         return float(raw)
     except Exception:
         return float(default)
+
+
+def _safe_bool(raw: Any, default: bool = False) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return bool(default)
+    text = str(raw).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off", ""}:
+        return False
+    return bool(default)
 
 
 def _bars_elapsed_since(ts: datetime | None, *, now_ts: datetime, bar_seconds: float) -> int:
@@ -1022,6 +1036,18 @@ def run_core(ctx: ProcessContext) -> None:
     budget_cutoff_ts: datetime | None = None
 
     def _load_runtime_params(config: Dict[str, Any]) -> Dict[str, Any]:
+        def _env_float(name: str, default: float) -> float:
+            raw = os.environ.get(name)
+            if raw is None:
+                return float(default)
+            return _safe_float(raw, default)
+
+        def _env_bool(name: str, default: bool) -> bool:
+            raw = os.environ.get(name)
+            if raw is None:
+                return bool(default)
+            return _safe_bool(raw, default)
+
         stale_seconds_local = float(_cfg(config, "core.stale_seconds", 10.0))
         md_interval_seconds_local = max(1.0, float(_cfg(config, "md.interval_seconds", 60.0)))
         # Core staleness uses market-event arrival. With bar aggregation, events only arrive
@@ -1050,6 +1076,47 @@ def run_core(ctx: ProcessContext) -> None:
             cycle_trade_fraction_raw = 1.0
         cycle_trade_fraction_local = max(0.0, min(1.0, float(cycle_trade_fraction_raw)))
         min_entry_notional_eur_local = max(0.0, float(_cfg(config, "exec.min_entry_notional_eur", 0.0)))
+        pre_buy_min_quote_volume_5m_default = _env_float(
+            "ROTATION_SELECTOR_ENTRY_QUALITY_MIN_5M_QUOTE_VOLUME",
+            _env_float("ROTATION_MIN_5M_QUOTE_VOLUME", 25.0),
+        )
+        pre_buy_min_quote_volume_60m_default = _env_float(
+            "ROTATION_SELECTOR_ENTRY_QUALITY_MIN_60M_QUOTE_VOLUME",
+            _env_float("ROTATION_MIN_60M_QUOTE_VOLUME", 5000.0),
+        )
+        pre_buy_volume_require_both_default = _env_bool(
+            "ROTATION_SELECTOR_ENTRY_QUALITY_VOLUME_REQUIRE_BOTH",
+            _env_bool("ROTATION_VOLUME_GATE_REQUIRE_BOTH", False),
+        )
+        pre_buy_volume_check_enabled_default = bool(ctx.mode == "live")
+        pre_buy_volume_check_enabled_local = _safe_bool(
+            _cfg(config, "risk.pre_buy_volume_check_enabled", pre_buy_volume_check_enabled_default),
+            pre_buy_volume_check_enabled_default,
+        )
+        pre_buy_volume_require_both_local = _safe_bool(
+            _cfg(config, "risk.pre_buy_volume_require_both", pre_buy_volume_require_both_default),
+            pre_buy_volume_require_both_default,
+        )
+        pre_buy_min_quote_volume_5m_local = max(
+            0.0,
+            float(
+                _cfg(
+                    config,
+                    "risk.pre_buy_min_quote_volume_5m",
+                    pre_buy_min_quote_volume_5m_default,
+                )
+            ),
+        )
+        pre_buy_min_quote_volume_60m_local = max(
+            0.0,
+            float(
+                _cfg(
+                    config,
+                    "risk.pre_buy_min_quote_volume_60m",
+                    pre_buy_min_quote_volume_60m_default,
+                )
+            ),
+        )
 
         floor_anchor_window_bars_local = max(1, int(_cfg(config, "policy.floor_anchor.window_bars", 0)))
         floor_anchor_percentile_local = float(_cfg(config, "policy.floor_anchor.percentile", 0.2))
@@ -1082,6 +1149,26 @@ def run_core(ctx: ProcessContext) -> None:
         profit_corridor_robust_high_pct_local = max(0.0, min(100.0, profit_corridor_robust_high_pct_local))
         if profit_corridor_robust_high_pct_local <= profit_corridor_robust_low_pct_local:
             profit_corridor_robust_high_pct_local = min(100.0, profit_corridor_robust_low_pct_local + 1.0)
+        profit_corridor_short_horizon_entry_guard_enabled_local = bool(
+            _cfg(config, "policy.profit_corridor.short_horizon_entry_guard_enabled", True)
+        )
+        profit_corridor_short_horizon_entry_window_bars_local = max(
+            1, int(_cfg(config, "policy.profit_corridor.short_horizon_entry_window_bars", 1440))
+        )
+        profit_corridor_short_horizon_entry_min_bars_local = max(
+            1, int(_cfg(config, "policy.profit_corridor.short_horizon_entry_min_bars", 720))
+        )
+        profit_corridor_short_horizon_entry_min_bars_local = min(
+            profit_corridor_short_horizon_entry_window_bars_local,
+            profit_corridor_short_horizon_entry_min_bars_local,
+        )
+        profit_corridor_short_horizon_no_buy_above_pct_local = max(
+            0.0,
+            min(
+                100.0,
+                float(_cfg(config, "policy.profit_corridor.short_horizon_no_buy_above_pct", 55.0)),
+            ),
+        )
 
         return {
             "stale_seconds": stale_seconds_local,
@@ -1114,6 +1201,10 @@ def run_core(ctx: ProcessContext) -> None:
             "cycle_trade_fraction": cycle_trade_fraction_local,
             "manual_entry_exit_only": bool(_cfg(config, "risk.manual_entry_exit_only", False)),
             "min_entry_notional_eur": min_entry_notional_eur_local,
+            "pre_buy_volume_check_enabled": pre_buy_volume_check_enabled_local,
+            "pre_buy_volume_require_both": pre_buy_volume_require_both_local,
+            "pre_buy_min_quote_volume_5m": pre_buy_min_quote_volume_5m_local,
+            "pre_buy_min_quote_volume_60m": pre_buy_min_quote_volume_60m_local,
             "floor_anchor_enabled": bool(_cfg(config, "policy.floor_anchor.enabled", False)),
             "floor_anchor_window_bars": floor_anchor_window_bars_local,
             "floor_anchor_min_bars": max(
@@ -1138,6 +1229,18 @@ def run_core(ctx: ProcessContext) -> None:
             "profit_corridor_robust_range_enabled": profit_corridor_robust_range_enabled_local,
             "profit_corridor_robust_low_pct": profit_corridor_robust_low_pct_local,
             "profit_corridor_robust_high_pct": profit_corridor_robust_high_pct_local,
+            "profit_corridor_short_horizon_entry_guard_enabled": (
+                profit_corridor_short_horizon_entry_guard_enabled_local
+            ),
+            "profit_corridor_short_horizon_entry_window_bars": (
+                profit_corridor_short_horizon_entry_window_bars_local
+            ),
+            "profit_corridor_short_horizon_entry_min_bars": (
+                profit_corridor_short_horizon_entry_min_bars_local
+            ),
+            "profit_corridor_short_horizon_no_buy_above_pct": (
+                profit_corridor_short_horizon_no_buy_above_pct_local
+            ),
             "profit_corridor_max_entry_position_pct": float(
                 _cfg(config, "policy.profit_corridor.max_entry_position_pct", 0.0)
             ),
@@ -1230,6 +1333,10 @@ def run_core(ctx: ProcessContext) -> None:
     cycle_trade_mode = str(runtime_params["cycle_trade_mode"])
     cycle_trade_fraction = float(runtime_params["cycle_trade_fraction"])
     manual_entry_exit_only = bool(runtime_params["manual_entry_exit_only"])
+    pre_buy_volume_check_enabled = bool(runtime_params["pre_buy_volume_check_enabled"])
+    pre_buy_volume_require_both = bool(runtime_params["pre_buy_volume_require_both"])
+    pre_buy_min_quote_volume_5m = float(runtime_params["pre_buy_min_quote_volume_5m"])
+    pre_buy_min_quote_volume_60m = float(runtime_params["pre_buy_min_quote_volume_60m"])
     dynamic_sizing_params: Dict[str, Any] = {
         "max_exposure_mode": max_exposure_mode,
         "max_exposure_fraction": max_exposure_fraction,
@@ -1255,6 +1362,18 @@ def run_core(ctx: ProcessContext) -> None:
     profit_corridor_robust_range_enabled = bool(runtime_params["profit_corridor_robust_range_enabled"])
     profit_corridor_robust_low_pct = float(runtime_params["profit_corridor_robust_low_pct"])
     profit_corridor_robust_high_pct = float(runtime_params["profit_corridor_robust_high_pct"])
+    profit_corridor_short_horizon_entry_guard_enabled = bool(
+        runtime_params["profit_corridor_short_horizon_entry_guard_enabled"]
+    )
+    profit_corridor_short_horizon_entry_window_bars = int(
+        runtime_params["profit_corridor_short_horizon_entry_window_bars"]
+    )
+    profit_corridor_short_horizon_entry_min_bars = int(
+        runtime_params["profit_corridor_short_horizon_entry_min_bars"]
+    )
+    profit_corridor_short_horizon_no_buy_above_pct = float(
+        runtime_params["profit_corridor_short_horizon_no_buy_above_pct"]
+    )
     profit_corridor_max_entry_position_pct = float(runtime_params["profit_corridor_max_entry_position_pct"])
     profit_corridor_staged_mode_enabled = bool(runtime_params["profit_corridor_staged_mode_enabled"])
     profit_corridor_staged_entry_1_pct = float(runtime_params["profit_corridor_staged_entry_1_pct"])
@@ -1298,6 +1417,34 @@ def run_core(ctx: ProcessContext) -> None:
         runtime_params["profit_corridor_staged_profit_target_mult_50"]
     )
 
+    def _volume_window_bars(window_seconds: float, interval_seconds: float) -> int:
+        return max(1, int(math.ceil(max(0.0, float(window_seconds)) / max(1.0, float(interval_seconds)))))
+
+    def _quote_volume_history_maxlen(interval_seconds: float) -> int:
+        # Keep one-hour history (plus tiny slack) for pre-buy volume checks.
+        return max(4, _volume_window_bars(3600.0, interval_seconds) + 2)
+
+    def _event_quote_volume_bar(event: MarketEvent) -> float:
+        micro = event.micro if isinstance(event.micro, dict) else {}
+        for key in ("quote_volume_bar", "quote_volume_5m", "qv_5m", "quote_volume", "quote_notional"):
+            value = _safe_float(micro.get(key), -1.0)
+            if value >= 0.0:
+                return float(value)
+        # Fallback: approximate quote volume from bar close * base volume.
+        return max(0.0, float(event.close) * max(0.0, float(event.volume)))
+
+    def _pre_buy_volume_ok(quote_volume_5m: float, quote_volume_60m: float) -> bool:
+        checks: List[bool] = []
+        if pre_buy_min_quote_volume_5m > 0.0:
+            checks.append(float(quote_volume_5m) >= pre_buy_min_quote_volume_5m)
+        if pre_buy_min_quote_volume_60m > 0.0:
+            checks.append(float(quote_volume_60m) >= pre_buy_min_quote_volume_60m)
+        if not checks:
+            return True
+        if pre_buy_volume_require_both:
+            return all(checks)
+        return any(checks)
+
     last_market_arrival = time.time()
     last_mark_price: float | None = None
     # In cycle mode (fixed notional enter/exit), we must prevent multiple in-flight orders; otherwise the
@@ -1316,9 +1463,13 @@ def run_core(ctx: ProcessContext) -> None:
     last_alpha_regime = ""
     last_alpha_regime_reason = ""
     order_times: Deque[float] = deque()
+    quote_volume_bar_history: Deque[float] = deque(maxlen=_quote_volume_history_maxlen(md_interval_seconds))
     floor_anchor_prices: Deque[float] = deque(maxlen=floor_anchor_window_bars or None)
     profit_corridor_prices: Deque[float] = deque(maxlen=profit_corridor_window_bars or None)
     profit_corridor_fast_prices: Deque[float] = deque(maxlen=profit_corridor_fast_window_bars or None)
+    profit_corridor_short_horizon_prices: Deque[float] = deque(
+        maxlen=profit_corridor_short_horizon_entry_window_bars or None
+    )
     resume_after: float | None = None
     latest_news: NewsEvent | None = None
     position_reference_pending = False
@@ -1486,9 +1637,11 @@ def run_core(ctx: ProcessContext) -> None:
 
     def _prime_price_windows(close_prices: List[Any]) -> None:
         nonlocal floor_anchor_prices, profit_corridor_prices, profit_corridor_fast_prices
+        nonlocal profit_corridor_short_horizon_prices
         floor_anchor_prices.clear()
         profit_corridor_prices.clear()
         profit_corridor_fast_prices.clear()
+        profit_corridor_short_horizon_prices.clear()
         if floor_anchor_enabled and floor_anchor_window_bars > 0:
             for raw_px in close_prices[-floor_anchor_window_bars:]:
                 try:
@@ -1513,6 +1666,18 @@ def run_core(ctx: ProcessContext) -> None:
                     continue
                 if px > 0.0:
                     profit_corridor_fast_prices.append(px)
+        if (
+            profit_corridor_enabled
+            and profit_corridor_short_horizon_entry_guard_enabled
+            and profit_corridor_short_horizon_entry_window_bars > 0
+        ):
+            for raw_px in close_prices[-profit_corridor_short_horizon_entry_window_bars:]:
+                try:
+                    px = float(raw_px)
+                except Exception:
+                    continue
+                if px > 0.0:
+                    profit_corridor_short_horizon_prices.append(px)
 
     def _send_progress_heartbeat() -> None:
         nonlocal hb_seq, last_heartbeat
@@ -1561,6 +1726,8 @@ def run_core(ctx: ProcessContext) -> None:
         nonlocal news_long_entry_min_impact, block_long_context_return_bps_below
         nonlocal block_long_trend_return_bps_below, max_exposure_mode, max_exposure_fraction
         nonlocal cycle_trade_mode, cycle_trade_fraction, manual_entry_exit_only
+        nonlocal pre_buy_volume_check_enabled, pre_buy_volume_require_both
+        nonlocal pre_buy_min_quote_volume_5m, pre_buy_min_quote_volume_60m
         nonlocal floor_anchor_enabled, floor_anchor_window_bars
         nonlocal dynamic_sizing_params
         nonlocal floor_anchor_min_bars, floor_anchor_percentile, floor_anchor_max_distance_bps
@@ -1571,8 +1738,13 @@ def run_core(ctx: ProcessContext) -> None:
         nonlocal profit_corridor_fast_blend_weight
         nonlocal profit_corridor_robust_range_enabled, profit_corridor_robust_low_pct
         nonlocal profit_corridor_robust_high_pct
+        nonlocal profit_corridor_short_horizon_entry_guard_enabled
+        nonlocal profit_corridor_short_horizon_entry_window_bars
+        nonlocal profit_corridor_short_horizon_entry_min_bars
+        nonlocal profit_corridor_short_horizon_no_buy_above_pct
         nonlocal profit_corridor_max_entry_position_pct
         nonlocal floor_anchor_prices, profit_corridor_prices, profit_corridor_fast_prices
+        nonlocal profit_corridor_short_horizon_prices
         nonlocal profit_corridor_staged_mode_enabled
         nonlocal profit_corridor_staged_entry_1_pct, profit_corridor_staged_entry_2_pct
         nonlocal profit_corridor_staged_entry_3_pct, profit_corridor_staged_entry_4_pct
@@ -1589,12 +1761,14 @@ def run_core(ctx: ProcessContext) -> None:
         nonlocal profit_corridor_staged_profit_target_mult_30
         nonlocal profit_corridor_staged_profit_target_mult_40
         nonlocal profit_corridor_staged_profit_target_mult_50
+        nonlocal quote_volume_bar_history
         nonlocal hb_seq, last_heartbeat
 
         runtime_path = _runtime_config_path(ctx.config)
         old_floor_prices = list(floor_anchor_prices)
         old_profit_prices = list(profit_corridor_prices)
         old_fast_profit_prices = list(profit_corridor_fast_prices)
+        old_short_horizon_profit_prices = list(profit_corridor_short_horizon_prices)
         old_risk_manager = risk_manager
         old_order_builder = order_builder
 
@@ -1698,6 +1872,10 @@ def run_core(ctx: ProcessContext) -> None:
             cycle_trade_mode = str(reloaded_runtime_params["cycle_trade_mode"])
             cycle_trade_fraction = float(reloaded_runtime_params["cycle_trade_fraction"])
             manual_entry_exit_only = bool(reloaded_runtime_params["manual_entry_exit_only"])
+            pre_buy_volume_check_enabled = bool(reloaded_runtime_params["pre_buy_volume_check_enabled"])
+            pre_buy_volume_require_both = bool(reloaded_runtime_params["pre_buy_volume_require_both"])
+            pre_buy_min_quote_volume_5m = float(reloaded_runtime_params["pre_buy_min_quote_volume_5m"])
+            pre_buy_min_quote_volume_60m = float(reloaded_runtime_params["pre_buy_min_quote_volume_60m"])
             dynamic_sizing_params = dict(reloaded_dynamic_sizing_params)
             floor_anchor_enabled = bool(reloaded_runtime_params["floor_anchor_enabled"])
             floor_anchor_window_bars = int(reloaded_runtime_params["floor_anchor_window_bars"])
@@ -1719,6 +1897,18 @@ def run_core(ctx: ProcessContext) -> None:
             )
             profit_corridor_robust_low_pct = float(reloaded_runtime_params["profit_corridor_robust_low_pct"])
             profit_corridor_robust_high_pct = float(reloaded_runtime_params["profit_corridor_robust_high_pct"])
+            profit_corridor_short_horizon_entry_guard_enabled = bool(
+                reloaded_runtime_params["profit_corridor_short_horizon_entry_guard_enabled"]
+            )
+            profit_corridor_short_horizon_entry_window_bars = int(
+                reloaded_runtime_params["profit_corridor_short_horizon_entry_window_bars"]
+            )
+            profit_corridor_short_horizon_entry_min_bars = int(
+                reloaded_runtime_params["profit_corridor_short_horizon_entry_min_bars"]
+            )
+            profit_corridor_short_horizon_no_buy_above_pct = float(
+                reloaded_runtime_params["profit_corridor_short_horizon_no_buy_above_pct"]
+            )
             profit_corridor_max_entry_position_pct = float(
                 reloaded_runtime_params["profit_corridor_max_entry_position_pct"]
             )
@@ -1785,6 +1975,7 @@ def run_core(ctx: ProcessContext) -> None:
             profit_corridor_staged_profit_target_mult_50 = float(
                 reloaded_runtime_params["profit_corridor_staged_profit_target_mult_50"]
             )
+            quote_volume_bar_history = deque(maxlen=_quote_volume_history_maxlen(md_interval_seconds))
             runtime_pipeline["feature_engine"] = feature_engine
             runtime_pipeline["alpha_model"] = alpha_model
             runtime_pipeline["cost_model"] = cost_model
@@ -1799,6 +1990,9 @@ def run_core(ctx: ProcessContext) -> None:
             floor_anchor_prices = deque(maxlen=floor_anchor_window_bars or None)
             profit_corridor_prices = deque(maxlen=profit_corridor_window_bars or None)
             profit_corridor_fast_prices = deque(maxlen=profit_corridor_fast_window_bars or None)
+            profit_corridor_short_horizon_prices = deque(
+                maxlen=profit_corridor_short_horizon_entry_window_bars or None
+            )
 
             if warmup_close_prices:
                 _prime_price_windows(warmup_close_prices)
@@ -1827,6 +2021,20 @@ def run_core(ctx: ProcessContext) -> None:
                             continue
                         if px > 0.0:
                             profit_corridor_fast_prices.append(px)
+                if (
+                    profit_corridor_enabled
+                    and profit_corridor_short_horizon_entry_guard_enabled
+                    and profit_corridor_short_horizon_entry_window_bars > 0
+                ):
+                    for raw_px in old_short_horizon_profit_prices[
+                        -profit_corridor_short_horizon_entry_window_bars:
+                    ]:
+                        try:
+                            px = float(raw_px)
+                        except Exception:
+                            continue
+                        if px > 0.0:
+                            profit_corridor_short_horizon_prices.append(px)
 
             _send_journal(
                 ctx,
@@ -2337,6 +2545,19 @@ def run_core(ctx: ProcessContext) -> None:
                         continue
                     if px > 0.0:
                         profit_corridor_fast_prices.append(px)
+            if (
+                profit_corridor_enabled
+                and profit_corridor_short_horizon_entry_guard_enabled
+                and profit_corridor_short_horizon_entry_window_bars > 0
+                and isinstance(warmup_close_prices, list)
+            ):
+                for raw_px in warmup_close_prices[-profit_corridor_short_horizon_entry_window_bars:]:
+                    try:
+                        px = float(raw_px)
+                    except Exception:
+                        continue
+                    if px > 0.0:
+                        profit_corridor_short_horizon_prices.append(px)
             _send_journal(ctx, "core_warmup", report)
         except Exception as exc:
             _send_journal(ctx, "core_warmup_error", {"error": str(exc)})
@@ -2496,6 +2717,12 @@ def run_core(ctx: ProcessContext) -> None:
                     profit_corridor_prices.append(float(event.close))
                 if profit_corridor_enabled and profit_corridor_fast_window_bars > 0:
                     profit_corridor_fast_prices.append(float(event.close))
+                if (
+                    profit_corridor_enabled
+                    and profit_corridor_short_horizon_entry_guard_enabled
+                    and profit_corridor_short_horizon_entry_window_bars > 0
+                ):
+                    profit_corridor_short_horizon_prices.append(float(event.close))
                 if trading_disable_reason == "stale_market_data" and not disable_seen_this_tick:
                     _enable_trading("market_data_fresh", "AUTO_RESUME", propagate=True)
                 try:
@@ -2531,8 +2758,23 @@ def run_core(ctx: ProcessContext) -> None:
                                 source="position_reference_initialized",
                             )
 
+                    bar_quote_volume = _event_quote_volume_bar(event)
+                    quote_volume_bar_history.append(max(0.0, float(bar_quote_volume)))
+                    qv_bars_5m = _volume_window_bars(300.0, md_interval_seconds)
+                    qv_bars_60m = _volume_window_bars(3600.0, md_interval_seconds)
+                    qv_history = list(quote_volume_bar_history)
+                    quote_volume_5m = float(sum(qv_history[-qv_bars_5m:])) if qv_history else 0.0
+                    quote_volume_60m = float(sum(qv_history[-qv_bars_60m:])) if qv_history else 0.0
+
                     # deterministic pipeline: features -> alpha -> cost -> gate -> risk -> intents
                     features = active_feature_engine.compute(event)
+                    features.values["quote_volume_bar"] = float(bar_quote_volume)
+                    features.values["quote_volume_5m"] = float(quote_volume_5m)
+                    features.values["quote_volume_60m"] = float(quote_volume_60m)
+                    features.values["pre_buy_volume_min_5m"] = float(pre_buy_min_quote_volume_5m)
+                    features.values["pre_buy_volume_min_60m"] = float(pre_buy_min_quote_volume_60m)
+                    features.values["pre_buy_volume_require_both"] = 1.0 if pre_buy_volume_require_both else 0.0
+                    features.values["pre_buy_volume_check_enabled"] = 1.0 if pre_buy_volume_check_enabled else 0.0
                     news_snapshot = {
                         "present": False,
                         "sentiment_score": 0.0,
@@ -2576,6 +2818,10 @@ def run_core(ctx: ProcessContext) -> None:
                     corridor_base_high_price = 0.0
                     corridor_fast_low_price = 0.0
                     corridor_fast_high_price = 0.0
+                    corridor_short_horizon_low_price = 0.0
+                    corridor_short_horizon_high_price = 0.0
+                    corridor_short_horizon_position_pct = 0.0
+                    corridor_short_horizon_ready = False
                     if floor_anchor_enabled and len(floor_anchor_prices) >= floor_anchor_min_bars:
                         sorted_prices = sorted(float(px) for px in floor_anchor_prices if float(px) > 0.0)
                         if sorted_prices:
@@ -2665,6 +2911,27 @@ def run_core(ctx: ProcessContext) -> None:
                             corridor_high_price = corridor_fast_high_price
                             corridor_ready = True
 
+                        short_horizon_window = [
+                            float(px) for px in profit_corridor_short_horizon_prices if float(px) > 0.0
+                        ]
+                        if (
+                            profit_corridor_short_horizon_entry_guard_enabled
+                            and len(short_horizon_window) >= profit_corridor_short_horizon_entry_min_bars
+                        ):
+                            short_low, short_high = _window_low_high(short_horizon_window)
+                            if short_high > short_low > 0.0:
+                                corridor_short_horizon_ready = True
+                                corridor_short_horizon_low_price = float(short_low)
+                                corridor_short_horizon_high_price = float(short_high)
+                                corridor_short_horizon_position_pct = (
+                                    (float(event.close) - corridor_short_horizon_low_price)
+                                    / (corridor_short_horizon_high_price - corridor_short_horizon_low_price)
+                                ) * 100.0
+                                corridor_short_horizon_position_pct = max(
+                                    0.0,
+                                    min(100.0, corridor_short_horizon_position_pct),
+                                )
+
                         if corridor_ready:
                             corridor_position_pct = (
                                 (float(event.close) - corridor_low_price)
@@ -2698,6 +2965,17 @@ def run_core(ctx: ProcessContext) -> None:
                     features.values["corridor_fast_low_price"] = float(corridor_fast_low_price)
                     features.values["corridor_fast_high_price"] = float(corridor_fast_high_price)
                     features.values["corridor_fast_blend_weight"] = float(profit_corridor_fast_blend_weight)
+                    features.values["corridor_short_horizon_ready"] = (
+                        1.0 if corridor_short_horizon_ready else 0.0
+                    )
+                    features.values["corridor_short_horizon_low_price"] = float(corridor_short_horizon_low_price)
+                    features.values["corridor_short_horizon_high_price"] = float(corridor_short_horizon_high_price)
+                    features.values["corridor_short_horizon_position_pct"] = float(
+                        corridor_short_horizon_position_pct
+                    )
+                    features.values["corridor_short_horizon_no_buy_above_pct"] = float(
+                        profit_corridor_short_horizon_no_buy_above_pct
+                    )
                     features.values["corridor_robust_range_enabled"] = (
                         1.0 if profit_corridor_robust_range_enabled else 0.0
                     )
@@ -2944,6 +3222,29 @@ def run_core(ctx: ProcessContext) -> None:
                                     cooldown_remaining=int(getattr(risk, "cooldown_remaining", 0) or 0),
                                 )
 
+                    if (
+                        profit_corridor_enabled
+                        and profit_corridor_short_horizon_entry_guard_enabled
+                    ):
+                        try:
+                            eps = float(getattr(active_order_builder.config, "min_trade_btc", 0.0) or 0.0)
+                        except Exception:
+                            eps = 0.0
+                        if abs(float(pre_state.position_btc)) <= max(1e-12, eps):
+                            if float(risk.target_position_btc) > max(1e-12, eps):
+                                if (
+                                    corridor_short_horizon_ready
+                                    and corridor_short_horizon_position_pct
+                                    >= profit_corridor_short_horizon_no_buy_above_pct
+                                ):
+                                    risk = RiskDecision(
+                                        ts=risk.ts,
+                                        allow=risk.allow,
+                                        target_position_btc=0.0,
+                                        reason="corridor_short_horizon_too_high",
+                                        cooldown_remaining=int(getattr(risk, "cooldown_remaining", 0) or 0),
+                                    )
+
                     # Optional corridor policy: block new long entries when price is already too high
                     # inside the rolling corridor (e.g. top 25% of the observed range).
                     if (
@@ -2989,6 +3290,26 @@ def run_core(ctx: ProcessContext) -> None:
                                 allow=risk.allow,
                                 target_position_btc=float(cur_pos),
                                 reason="manual_entry_exit_only",
+                                cooldown_remaining=int(getattr(risk, "cooldown_remaining", 0) or 0),
+                            )
+
+                    pre_buy_volume_pass = _pre_buy_volume_ok(quote_volume_5m, quote_volume_60m)
+                    pre_buy_volume_ok = (not pre_buy_volume_check_enabled) or pre_buy_volume_pass
+                    features.values["pre_buy_volume_ok"] = 1.0 if pre_buy_volume_ok else 0.0
+                    if pre_buy_volume_check_enabled and not pre_buy_volume_pass:
+                        eps = max(
+                            1e-12,
+                            float(getattr(active_risk_manager.config, "position_epsilon_btc", 0.0) or 0.0),
+                        )
+                        cur_pos = float(active_risk_manager.effective_position_btc(pre_state, price_hint=event.close))
+                        tgt_pos = float(risk.target_position_btc)
+                        increasing_long = tgt_pos > (cur_pos + eps) and tgt_pos > eps
+                        if increasing_long:
+                            risk = RiskDecision(
+                                ts=risk.ts,
+                                allow=risk.allow,
+                                target_position_btc=float(cur_pos),
+                                reason="pre_buy_volume",
                                 cooldown_remaining=int(getattr(risk, "cooldown_remaining", 0) or 0),
                             )
 
@@ -3132,6 +3453,10 @@ def run_core(ctx: ProcessContext) -> None:
                                 "cycle_trade_mode": cycle_trade_mode,
                                 "cycle_trade_eur": float(active_order_builder.config.cycle_trade_eur),
                                 "manual_entry_exit_only": manual_entry_exit_only,
+                                "pre_buy_volume_check_enabled": pre_buy_volume_check_enabled,
+                                "pre_buy_volume_require_both": pre_buy_volume_require_both,
+                                "pre_buy_min_quote_volume_5m": pre_buy_min_quote_volume_5m,
+                                "pre_buy_min_quote_volume_60m": pre_buy_min_quote_volume_60m,
                             },
                             "risk": {
                                 "allow": risk.allow,

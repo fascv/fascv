@@ -102,6 +102,10 @@ load_runtime_env() {
   ACTIVE_TOP="${ACTIVE_TOP:-4}"
   WATCH_TOP="${WATCH_TOP:-0}"
   MIN_ACTIVE_MINUTES="${MIN_ACTIVE_MINUTES:-5}"
+  CLEANUP_ORPHANS_EVERY_N_CYCLES="${CLEANUP_ORPHANS_EVERY_N_CYCLES:-5}"
+  if ! [[ "$CLEANUP_ORPHANS_EVERY_N_CYCLES" =~ ^[0-9]+$ ]]; then
+    CLEANUP_ORPHANS_EVERY_N_CYCLES=5
+  fi
   APPLY_CHANGES="${APPLY_CHANGES:-1}"
   ROTATION_PROFILE="${ROTATION_PROFILE:-default}"
   if [[ -n "$profile_override" ]]; then
@@ -126,9 +130,11 @@ trap on_term INT TERM
 
 ts() { date -Is; }
 
-echo "$(ts) [selector] start interval=${SELECTOR_INTERVAL_SEC}s mode=${selector_mode} profile=${ROTATION_PROFILE} top=${ACTIVE_TOP} watch_top=${WATCH_TOP} min_active_min=${MIN_ACTIVE_MINUTES} retain_min_score=${ACTIVE_RETAIN_MIN_SCORE} timeout=${SELECTOR_TIMEOUT_SEC}s" >> "$GUARD_LOG"
+echo "$(ts) [selector] start interval=${SELECTOR_INTERVAL_SEC}s mode=${selector_mode} profile=${ROTATION_PROFILE} top=${ACTIVE_TOP} watch_top=${WATCH_TOP} min_active_min=${MIN_ACTIVE_MINUTES} retain_min_score=${ACTIVE_RETAIN_MIN_SCORE} timeout=${SELECTOR_TIMEOUT_SEC}s orphan_cleanup_every=${CLEANUP_ORPHANS_EVERY_N_CYCLES}" >> "$GUARD_LOG"
 
+cycle_idx=0
 while (( stop == 0 )); do
+  cycle_idx=$((cycle_idx + 1))
   load_runtime_env
   if [[ -f "$DISABLE_FILE" ]]; then
     echo "$(ts) [selector] disabled via ${DISABLE_FILE}; waiting" >> "$GUARD_LOG"
@@ -136,6 +142,14 @@ while (( stop == 0 )); do
       sleep 5
     done
     continue
+  fi
+
+  if (( CLEANUP_ORPHANS_EVERY_N_CYCLES > 0 )) && (( cycle_idx % CLEANUP_ORPHANS_EVERY_N_CYCLES == 0 )); then
+    if python3 scripts/rotation_apply_active_lanes.py --cleanup-orphans-only >> "$GUARD_LOG" 2>&1; then
+      echo "$(ts) [selector] orphan-cleanup ok" >> "$GUARD_LOG"
+    else
+      echo "$(ts) [selector] orphan-cleanup failed" >> "$GUARD_LOG"
+    fi
   fi
 
   selector_cmd=(
