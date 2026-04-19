@@ -158,6 +158,77 @@ class TestSimSafety(unittest.TestCase):
         self.assertEqual(d2.target_position_btc, 0.0)
         self.assertEqual(d2.reason, "profit_roll_exit")
 
+    def test_profit_only_auto_exits_disable_time_break_even_floor(self) -> None:
+        from trading.types import AccountState
+
+        cfg = RiskConfig(
+            max_exposure_eur=1000.0,
+            vol_target_bps=100.0,
+            daily_loss_limit_eur=1000.0,
+            max_drawdown_pct=90.0,
+            cooldown_bars=1,
+            allow_short=False,
+            profit_only_auto_exits=True,
+            use_vol_scaling=False,
+            use_gate_size_factor=False,
+            min_exit_profit_bps=10.0,
+            exit_edge_bps=-100.0,
+            time_break_even_floor_enabled=True,
+            time_break_even_floor_bars=2,
+            failed_start_loss_bps=20.0,
+        )
+        rm = RiskManager(cfg)
+        ts = datetime(2026, 3, 13, tzinfo=timezone.utc)
+        state = AccountState(
+            ts=ts,
+            cash_eur=0.0,
+            position_btc=1.0,
+            avg_entry_price=100.0,
+            realized_pnl_eur=0.0,
+            equity_eur=100.0,
+            peak_equity_eur=100.0,
+            drawdown_pct=0.0,
+            day_start_equity_eur=100.0,
+        )
+        gate = GateDecision(ts=ts, allow=True, size_factor=1.0, reason=None)
+        strong_runner = {
+            "atr_bps": 10.0,
+            "alpha_continuation_await_liftoff": 1.0,
+            "alpha_up_structure": 1.0,
+            "alpha_down_structure": 0.0,
+            "alpha_active_leg_rise": 1.0,
+            "alpha_structure_range_pos": 0.52,
+            "alpha_recent_bias_bps": 20.0,
+            "trend_return_bps": 58.0,
+        }
+
+        d1 = rm.decide(
+            state,
+            Features(ts=ts, values={**strong_runner, "price": 100.28}),
+            gate,
+            predicted_edge_bps=8.0,
+            expected_cost_bps=0.0,
+        )
+        d2 = rm.decide(
+            state,
+            Features(ts=ts, values={**strong_runner, "price": 100.05}),
+            gate,
+            predicted_edge_bps=8.0,
+            expected_cost_bps=0.0,
+        )
+        d3 = rm.decide(
+            state,
+            Features(ts=ts, values={**strong_runner, "price": 99.98}),
+            gate,
+            predicted_edge_bps=8.0,
+            expected_cost_bps=0.0,
+        )
+
+        self.assertEqual(d1.reason, "hold_full_position")
+        self.assertEqual(d2.reason, "hold_full_position")
+        self.assertEqual(d3.reason, "hold_full_position")
+        self.assertEqual(d3.target_position_btc, state.position_btc)
+
     def test_order_builder_clamps_buy_qty_includes_fee(self) -> None:
         ob = OrderBuilder(
             OrderConfig(

@@ -1918,6 +1918,38 @@ class TestRotationSelectorProfileOverrides(unittest.TestCase):
         self.assertIn("profile: scalp_lockdown", output)
         self.assertIn("strategy=breakout", output)
 
+    def test_main_reapplies_when_desired_lane_is_down_even_if_rotation_unchanged(self) -> None:
+        payload = {
+            "ok": True,
+            "generated_at": "2026-03-12T11:32:11.331798+00:00",
+            "selected": ["BTC"],
+            "watch_symbols": ["BTC", "ETH"],
+            "fraction": 1.0,
+            "profile": "scalp_lockdown",
+            "switch_margin_score": 8.0,
+            "max_retain_position_pct": 70.0,
+            "selector_fallback_rows_used": False,
+            "selector_rate_limit_detected": False,
+            "selected_strategy_map": {"BTC": "breakout"},
+            "rows": [],
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            active_file = Path(tmpdir) / "rotation_active_lanes.json"
+            with (
+                mock.patch.object(rotation_auto_coin_selector, "ACTIVE_FILE", active_file),
+                mock.patch.object(rotation_auto_coin_selector, "_load_previous_payload", return_value=payload),
+                mock.patch.object(rotation_auto_coin_selector, "build_selector_payload", return_value=payload),
+                mock.patch.object(rotation_auto_coin_selector, "_lane_reconcile_needed", return_value=True),
+                mock.patch("scripts.rotation_auto_coin_selector.subprocess.check_call") as check_call,
+                mock.patch("sys.argv", ["rotation_auto_coin_selector.py", "--profile", "scalp_lockdown", "--apply"]),
+            ):
+                rotation_auto_coin_selector.main()
+
+        check_call.assert_called_once_with(
+            ["python3", "scripts/rotation_apply_active_lanes.py"],
+            cwd=rotation_auto_coin_selector.REPO_ROOT,
+        )
+
     def test_selector_scan_timeout_defaults_to_210_seconds(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertEqual(rotation_auto_coin_selector._selector_scan_timeout_sec(), 210.0)

@@ -34,6 +34,11 @@ PORT = int(os.getenv("RELAY_PORT", "8000"))
 REQUEST_TIMEOUT = float(os.getenv("RELAY_TIMEOUT_SEC", "25"))
 MAX_WORKERS = max(1, min(int(os.getenv("RELAY_WORKERS", "8")), 24))
 REPORT_CACHE_TTL_SEC = float(os.getenv("REPORT_CACHE_TTL_SEC", "900"))
+REPORT_CACHE_MAX_ENTRIES = max(0, int(os.getenv("REPORT_CACHE_MAX_ENTRIES", "8")))
+REPORT_CACHE_MAX_ENTRY_BYTES = max(
+    0,
+    int(os.getenv("REPORT_CACHE_MAX_ENTRY_BYTES", str(4 * 1024 * 1024))),
+)
 MY_TRADES_MIN_INTERVAL_SEC = max(0.0, float(os.getenv("MY_TRADES_MIN_INTERVAL_SEC", "0.35")))
 MY_TRADES_MAX_RETRIES = max(1, int(os.getenv("MY_TRADES_MAX_RETRIES", "3")))
 MY_TRADES_RETRY_BASE_SEC = max(0.1, float(os.getenv("MY_TRADES_RETRY_BASE_SEC", "2.0")))
@@ -100,7 +105,8 @@ _ZRO_STYLE_CACHE: dict[str, Any] | None = None
 _ZRO_STYLE_CACHE_AT: float = 0.0
 _ZRO_STYLE_CACHE_LOCK = threading.Lock()
 _ZRO_STYLE_REFRESH_LOCK = threading.Lock()
-_REPORT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_REPORT_CACHE: dict[str, tuple[float, int, dict[str, Any]]] = {}
+_REPORT_CACHE_LOCK = threading.Lock()
 _MY_TRADES_LOCK = threading.Lock()
 _MY_TRADES_NEXT_TS = 0.0
 _BINANCE_REPORT_LOCK = threading.Lock()
@@ -186,6 +192,7 @@ NON_BUY_REASON_TEXT: dict[str, str] = {
     "trading_disabled": "Trading ist deaktiviert",
 }
 ROTATION_UNIT_RE = re.compile(r"codex-rotation-([a-z0-9]+)\.service")
+ROTATION_UNIT_ENV_CONTROL_PORT_RE = re.compile(r"(?:^| )CONTROL_PORT=(\d+)(?: |$)")
 ROTATION_STATUS_TIMEOUT_SEC = max(0.25, float(os.getenv("ROTATION_STATUS_TIMEOUT_SEC", "1.5")))
 ROTATION_STATUS_RETRIES = max(1, int(os.getenv("ROTATION_STATUS_RETRIES", "3")))
 ROTATION_STATUS_RETRY_DELAY_SEC = max(
@@ -218,6 +225,63 @@ _ROTATION_LIVE_CACHE: tuple[float, dict[str, Any]] | None = None
 _ROTATION_LIVE_CACHE_LOCK = threading.Lock()
 _ROTATION_LIVE_REFRESH_LOCK = threading.Lock()
 _RUNTIME_CONFIG_CACHE: dict[str, tuple[int, int, dict[str, Any]]] = {}
+
+
+def _report_cache_enabled() -> bool:
+    return REPORT_CACHE_TTL_SEC > 0.0 and REPORT_CACHE_MAX_ENTRIES != 0
+
+
+def _report_cache_prune_locked(now: float) -> None:
+    if not _REPORT_CACHE:
+        return
+    if not _report_cache_enabled():
+        _REPORT_CACHE.clear()
+        return
+    expired_keys = [
+        key for key, (cached_at, _cached_bytes, _payload) in _REPORT_CACHE.items()
+        if (now - cached_at) >= REPORT_CACHE_TTL_SEC
+    ]
+    for key in expired_keys:
+        _REPORT_CACHE.pop(key, None)
+    while REPORT_CACHE_MAX_ENTRIES > 0 and len(_REPORT_CACHE) > REPORT_CACHE_MAX_ENTRIES:
+        oldest_key = next(iter(_REPORT_CACHE))
+        _REPORT_CACHE.pop(oldest_key, None)
+
+
+def _report_cache_estimate_bytes(payload: dict[str, Any]) -> int:
+    try:
+        return len(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _report_cache_get(cache_key: str) -> dict[str, Any] | None:
+    if not _report_cache_enabled():
+        return None
+    now = time.time()
+    with _REPORT_CACHE_LOCK:
+        _report_cache_prune_locked(now)
+        cached = _REPORT_CACHE.get(cache_key)
+        if cached is None:
+            return None
+        cached_at, payload_bytes, payload = cached
+        # Reinsert to keep hot entries while preserving TTL semantics.
+        _REPORT_CACHE.pop(cache_key, None)
+        _REPORT_CACHE[cache_key] = (cached_at, payload_bytes, payload)
+        return payload
+
+
+def _report_cache_put(cache_key: str, payload: dict[str, Any]) -> None:
+    if not _report_cache_enabled():
+        return
+    payload_bytes = _report_cache_estimate_bytes(payload)
+    if REPORT_CACHE_MAX_ENTRY_BYTES > 0 and payload_bytes > REPORT_CACHE_MAX_ENTRY_BYTES:
+        return
+    now = time.time()
+    with _REPORT_CACHE_LOCK:
+        _REPORT_CACHE.pop(cache_key, None)
+        _REPORT_CACHE[cache_key] = (now, payload_bytes, payload)
+        _report_cache_prune_locked(now)
 _RUNTIME_CONFIG_CACHE_LOCK = threading.Lock()
 
 
@@ -2432,6 +2496,65 @@ def _load_rotation_lane_port_from_config(symbol: str) -> int | None:
     return port if port > 0 else None
 
 
+def _load_rotation_lane_ports_from_running_services(
+    symbols: list[str] | None = None,
+) -> dict[str, int]:
+    requested_symbols: list[str] = []
+    for symbol in symbols or []:
+        symbol_name = str(symbol or "").strip().upper()
+        if symbol_name and symbol_name not in requested_symbols:
+            requested_symbols.append(symbol_name)
+    if not requested_symbols:
+        requested_symbols = list_running_rotation_symbols()
+    if not requested_symbols:
+        return {}
+
+    units = [f"codex-rotation-{symbol.lower()}.service" for symbol in requested_symbols]
+    try:
+        out = subprocess.check_output(
+            [
+                "systemctl",
+                "--user",
+                "show",
+                *units,
+                "-p",
+                "Id",
+                "-p",
+                "Environment",
+            ],
+            cwd=REPO_ROOT,
+            text=True,
+            timeout=8,
+        )
+    except Exception:
+        return {}
+
+    ports: dict[str, int] = {}
+    pending_port: int | None = None
+    for raw_line in out.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("Environment="):
+            env_value = line.partition("=")[2]
+            match = ROTATION_UNIT_ENV_CONTROL_PORT_RE.search(env_value)
+            if not match:
+                pending_port = None
+                continue
+            try:
+                pending_port = int(match.group(1))
+            except (TypeError, ValueError):
+                pending_port = None
+            continue
+        if line.startswith("Id="):
+            match = ROTATION_UNIT_RE.search(line)
+            symbol_name = str(match.group(1)).strip().upper() if match else ""
+            if symbol_name and pending_port and pending_port > 0:
+                ports[symbol_name] = pending_port
+            pending_port = None
+    return ports
+
+
 def load_rotation_lane_ports(extra_symbols: list[str] | None = None) -> dict[str, int]:
     if REPO_ROOT not in sys.path:
         sys.path.insert(0, REPO_ROOT)
@@ -2450,20 +2573,24 @@ def load_rotation_lane_ports(extra_symbols: list[str] | None = None) -> dict[str
         except (TypeError, ValueError):
             continue
 
+    service_ports = _load_rotation_lane_ports_from_running_services(extra_symbols)
+    for symbol_name, port in service_ports.items():
+        lane_ports[symbol_name] = port
+
     for symbol in extra_symbols or []:
         symbol_name = str(symbol or "").strip().upper()
         if not symbol_name or symbol_name in lane_ports:
+            continue
+        config_port = _load_rotation_lane_port_from_config(symbol_name)
+        if config_port is not None:
+            lane_ports[symbol_name] = config_port
             continue
         legacy_ports = LEGACY_PORTS.get(symbol_name)
         if isinstance(legacy_ports, tuple) and legacy_ports:
             try:
                 lane_ports[symbol_name] = int(legacy_ports[0])
-                continue
             except (TypeError, ValueError):
                 pass
-        config_port = _load_rotation_lane_port_from_config(symbol_name)
-        if config_port is not None:
-            lane_ports[symbol_name] = config_port
     return lane_ports
 
 
@@ -3397,12 +3524,9 @@ def collect_trades_local(from_iso: str, to_iso: str, symbols_filter: list[str] |
     cache_key = f"local|{from_dt.isoformat()}|{to_dt.isoformat()}"
     if symbols_filter:
         cache_key = f"{cache_key}|{'-'.join(sorted(symbols_filter))}"
-    now = time.time()
-    cached = _REPORT_CACHE.get(cache_key)
+    cached = _report_cache_get(cache_key)
     if cached is not None:
-        ts, payload = cached
-        if (now - ts) < REPORT_CACHE_TTL_SEC:
-            return payload
+        return cached
 
     files = iter_local_journal_files(symbols_filter)
     if not files:
@@ -3502,7 +3626,7 @@ def collect_trades_local(from_iso: str, to_iso: str, symbols_filter: list[str] |
     report["source"] = "local_journal"
     report["scannedJournalFiles"] = len(files)
     report["fillEvents"] = len(normalized_trades)
-    _REPORT_CACHE[cache_key] = (time.time(), report)
+    _report_cache_put(cache_key, report)
     return report
 
 
@@ -3512,14 +3636,11 @@ def collect_trades_mirror(from_iso: str, to_iso: str, symbols_filter: list[str] 
     cache_key = f"mirror|{from_dt.isoformat()}|{to_dt.isoformat()}"
     if symbols_filter:
         cache_key = f"{cache_key}|{'-'.join(sorted(symbols_filter))}"
-    now = time.time()
-    cached = _REPORT_CACHE.get(cache_key)
+    cached = _report_cache_get(cache_key)
     if cached is not None:
-        ts, payload = cached
-        if (now - ts) < REPORT_CACHE_TTL_SEC:
-            return payload
+        return cached
     report = binance_trade_mirror.collect_trades_mirror(from_iso, to_iso, symbols_filter)
-    _REPORT_CACHE[cache_key] = (time.time(), report)
+    _report_cache_put(cache_key, report)
     return report
 
 
@@ -3551,12 +3672,9 @@ def collect_trades(from_iso: str, to_iso: str, symbols_filter: list[str] | None 
     cache_key = f"{from_dt.isoformat()}|{to_dt.isoformat()}"
     if symbols_filter:
         cache_key = f"{cache_key}|{'-'.join(sorted(symbols_filter))}"
-    now = time.time()
-    cached = _REPORT_CACHE.get(cache_key)
+    cached = _report_cache_get(cache_key)
     if cached is not None:
-        ts, payload = cached
-        if (now - ts) < REPORT_CACHE_TTL_SEC:
-            return payload
+        return cached
 
     start_ms = int(from_dt.timestamp() * 1000)
     end_ms = int(to_dt.timestamp() * 1000)
@@ -3623,7 +3741,7 @@ def collect_trades(from_iso: str, to_iso: str, symbols_filter: list[str] | None 
         report["warning"] = (
             "Einige Symbole wurden wegen Binance 429 (Request-Weight-Limit) uebersprungen."
         )
-    _REPORT_CACHE[cache_key] = (time.time(), report)
+    _report_cache_put(cache_key, report)
     return report
 
 

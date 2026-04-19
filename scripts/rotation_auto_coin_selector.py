@@ -6,6 +6,7 @@ import json
 import math
 import os
 import subprocess
+import urllib.request
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 import sys
@@ -40,6 +41,7 @@ DEFAULT_EXCLUDED_BASE_SYMBOLS: frozenset[str] = frozenset(
 )
 
 ACTIVE_FILE = REPO_ROOT / "configs" / "rotation_active_lanes.json"
+MANUAL_LANES_FILE = REPO_ROOT / "configs" / "rotation_manual_lanes.json"
 START_SCRIPT = REPO_ROOT / "scripts" / "rotation_guards_start.sh"
 CONFIG_TEMPLATE = REPO_ROOT / "configs" / "live_binance_kaito_usdc_rotation.yaml"
 SELECTOR_CACHE_FILE = REPO_ROOT / "logs" / "rotation_selector_rows_cache.json"
@@ -1717,6 +1719,89 @@ def _load_previous_payload() -> dict:
     if not isinstance(obj, dict):
         return {}
     return obj
+
+
+def _load_manual_watch_symbols() -> list[str]:
+    if not MANUAL_LANES_FILE.exists():
+        return []
+    try:
+        obj = json.loads(MANUAL_LANES_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    raw = obj.get("watch_symbols")
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        symbol = str(item or "").strip().upper()
+        if symbol and symbol not in out:
+            out.append(symbol)
+    return out
+
+
+def _lane_unit_name(symbol: str) -> str:
+    return f"codex-rotation-{str(symbol or '').strip().lower()}.service"
+
+
+def _lane_disable_file(symbol: str) -> Path:
+    return REPO_ROOT / "logs" / f"{str(symbol or '').strip().lower()}_rotation_guard.disabled"
+
+
+def _unit_state(unit: str) -> tuple[str, str]:
+    try:
+        out = subprocess.check_output(
+            ["systemctl", "--user", "show", unit, "--property=ActiveState,SubState"],
+            cwd=REPO_ROOT,
+            text=True,
+        )
+    except Exception:
+        return "", ""
+    values: dict[str, str] = {}
+    for line in out.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key] = value
+    return values.get("ActiveState", ""), values.get("SubState", "")
+
+
+def _lane_health_ok(symbol: str) -> bool:
+    ports = PORTS.get(str(symbol or "").strip().upper())
+    if not ports:
+        return True
+    try:
+        control_port = int(ports[0])
+    except Exception:
+        return False
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{control_port}/health", timeout=0.7) as resp:
+            return int(getattr(resp, "status", 0) or 0) == 200
+    except Exception:
+        return False
+
+
+def _desired_lane_symbols(payload: dict) -> list[str]:
+    desired: list[str] = []
+    for raw in list(payload.get("watch_symbols") or []) + list(payload.get("selected") or []):
+        symbol = str(raw or "").strip().upper()
+        if symbol and symbol not in desired:
+            desired.append(symbol)
+    for symbol in _load_manual_watch_symbols():
+        if symbol not in desired:
+            desired.append(symbol)
+    return desired
+
+
+def _lane_reconcile_needed(payload: dict) -> bool:
+    for symbol in _desired_lane_symbols(payload):
+        if _lane_disable_file(symbol).exists():
+            return True
+        active_state, sub_state = _unit_state(_lane_unit_name(symbol))
+        if active_state != "active" or sub_state != "running":
+            return True
+        if not _lane_health_ok(symbol):
+            return True
+    return False
 
 
 def _load_previous_state(payload: dict | None = None) -> tuple[list[str], dict[str, str], list[str]]:
@@ -6378,8 +6463,9 @@ def main() -> None:
 
     apply_needed = _apply_signature(previous_payload) != _apply_signature(payload)
     profile_changed = _profile_signature_changed(previous_payload, payload)
+    reconcile_needed = _lane_reconcile_needed(payload)
     if args.apply:
-        if apply_needed or profile_changed:
+        if apply_needed or profile_changed or reconcile_needed:
             apply_cmd = ["python3", "scripts/rotation_apply_active_lanes.py"]
             if profile_changed:
                 apply_cmd.append("--reload-running")

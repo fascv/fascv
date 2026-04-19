@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
+import types
 from urllib.error import URLError
 import tempfile
 import unittest
@@ -214,6 +216,7 @@ class TestRelayLiveCampaign(unittest.TestCase):
         port_to_symbol = {
             8308: "BANANAS31",
             8038: "ATOM",
+            8000: "OP",
             8004: "OP",
         }
 
@@ -746,6 +749,81 @@ class TestRelayLiveCampaign(unittest.TestCase):
         self.assertEqual(report["fillEvents"], 2)
         self.assertEqual(report["daySummary"]["bundleCount"], 1)
         self.assertAlmostEqual(report["daySummary"]["proceedsUsdc"], 0.19, places=6)
+
+    def test_report_cache_prunes_to_max_entries_and_keeps_recently_used_entries(self) -> None:
+        old_cache = relay_server._REPORT_CACHE
+        cache_snapshot: dict[str, object] = {}
+        try:
+            relay_server._REPORT_CACHE = {}
+            with (
+                mock.patch.object(relay_server, "REPORT_CACHE_TTL_SEC", 900.0),
+                mock.patch.object(relay_server, "REPORT_CACHE_MAX_ENTRIES", 2),
+                mock.patch.object(relay_server, "REPORT_CACHE_MAX_ENTRY_BYTES", 0),
+            ):
+                relay_server._report_cache_put("first", {"report": 1})
+                relay_server._report_cache_put("second", {"report": 2})
+                self.assertEqual(relay_server._report_cache_get("first"), {"report": 1})
+                relay_server._report_cache_put("third", {"report": 3})
+                cache_snapshot = dict(relay_server._REPORT_CACHE)
+        finally:
+            relay_server._REPORT_CACHE = old_cache
+
+        self.assertIn("first", cache_snapshot)
+        self.assertIn("third", cache_snapshot)
+        self.assertNotIn("second", cache_snapshot)
+
+    def test_report_cache_skips_oversized_entries(self) -> None:
+        old_cache = relay_server._REPORT_CACHE
+        cache_snapshot: dict[str, object] = {"placeholder": 1}
+        try:
+            relay_server._REPORT_CACHE = {}
+            with (
+                mock.patch.object(relay_server, "REPORT_CACHE_TTL_SEC", 900.0),
+                mock.patch.object(relay_server, "REPORT_CACHE_MAX_ENTRIES", 8),
+                mock.patch.object(relay_server, "REPORT_CACHE_MAX_ENTRY_BYTES", 32),
+            ):
+                relay_server._report_cache_put("too-big", {"payload": "x" * 256})
+                cache_snapshot = dict(relay_server._REPORT_CACHE)
+        finally:
+            relay_server._REPORT_CACHE = old_cache
+
+        self.assertEqual(cache_snapshot, {})
+
+    def test_load_rotation_lane_ports_prefers_running_service_port_over_legacy(self) -> None:
+        fake_rotation_universe = types.ModuleType("trading.rotation_universe")
+        fake_rotation_universe.LEGACY_PORTS = {"API3": (8042, 10110, 10120, 10130, 10140)}
+        fake_rotation_universe.build_lanes = lambda: {}
+
+        with (
+            mock.patch.dict(sys.modules, {"trading.rotation_universe": fake_rotation_universe}),
+            mock.patch.object(
+                relay_server,
+                "_load_rotation_lane_ports_from_running_services",
+                return_value={"API3": 8242},
+            ),
+        ):
+            ports = relay_server.load_rotation_lane_ports(["API3"])
+
+        self.assertEqual(ports["API3"], 8242)
+
+    def test_load_rotation_lane_ports_from_running_services_handles_environment_before_id(self) -> None:
+        output = "\n".join(
+            [
+                "Environment=MODE=live CONTROL_PORT=8062 PID_FILE=/tmp/sui.pid",
+                "Id=codex-rotation-sui.service",
+                "",
+                "Environment=MODE=live CONTROL_PORT=8222 PID_FILE=/tmp/t.pid",
+                "Id=codex-rotation-t.service",
+                "",
+                "Environment=MODE=live CONTROL_PORT=8026 PID_FILE=/tmp/ada.pid",
+                "Id=codex-rotation-ada.service",
+            ]
+        )
+
+        with mock.patch.object(relay_server.subprocess, "check_output", return_value=output):
+            ports = relay_server._load_rotation_lane_ports_from_running_services(["SUI", "T", "ADA"])
+
+        self.assertEqual(ports, {"SUI": 8062, "T": 8222, "ADA": 8026})
 
     def test_report_auto_prefers_mirror_and_falls_back_to_local(self) -> None:
         with mock.patch.object(relay_server, "collect_trades_mirror", return_value={"source": "binance_mirror"}) as mirror_mock:

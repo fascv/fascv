@@ -339,22 +339,36 @@ def build_report(
     if settle_by_sell_time:
         from_dt = parse_iso_utc(from_iso)
         to_dt = parse_iso_utc(to_iso)
-        filtered_rows: list[dict[str, Any]] = []
+        filtered_closed_rows: list[dict[str, Any]] = []
+        filtered_open_rows: list[dict[str, Any]] = []
         for row in trade_rows:
-            if not bool(row.get("closed")):
+            if bool(row.get("closed")):
+                sell_time = str(row.get("sellTime") or "").strip()
+                if not sell_time:
+                    continue
+                try:
+                    sell_dt = parse_iso_utc(sell_time)
+                except Exception:
+                    continue
+                if from_dt <= sell_dt < to_dt:
+                    filtered_closed_rows.append(row)
                 continue
-            sell_time = str(row.get("sellTime") or "").strip()
-            if not sell_time:
+
+            buy_time = str(row.get("buyTime") or "").strip()
+            if not buy_time:
                 continue
             try:
-                sell_dt = parse_iso_utc(sell_time)
+                buy_dt = parse_iso_utc(buy_time)
             except Exception:
                 continue
-            if from_dt <= sell_dt < to_dt:
-                filtered_rows.append(row)
-        report_rows = filtered_rows
+            if from_dt <= buy_dt < to_dt:
+                filtered_open_rows.append(row)
+        report_rows = filtered_closed_rows + filtered_open_rows
+        report_rows.sort(key=lambda row: (str(row.get("sellTime") or row.get("buyTime") or ""), str(row.get("symbol") or "")))
 
     if settle_by_sell_time:
+        closed_report_rows = [row for row in report_rows if bool(row.get("closed"))]
+        open_report_rows = [row for row in report_rows if not bool(row.get("closed"))]
         bundles = [
             {
                 "symbol": str(row.get("symbol") or ""),
@@ -365,12 +379,12 @@ def build_report(
                 "sellGrossUsdc": round(float(row.get("sellGrossUsdc") or 0.0), 8),
                 "proceedsUsdc": round(float(row.get("proceedsUsdc") or 0.0), 8),
             }
-            for row in report_rows
+            for row in closed_report_rows
         ]
         bundles.sort(key=lambda item: (item["sellTime"], item["symbol"]))
 
         symbol_map = {}
-        for row in report_rows:
+        for row in closed_report_rows:
             symbol = str(row.get("symbol") or "")
             entry = symbol_map.setdefault(
                 symbol,
@@ -380,12 +394,29 @@ def build_report(
                     "buyGrossUsdc": 0.0,
                     "sellGrossUsdc": 0.0,
                     "proceedsUsdc": 0.0,
+                    "openTradeRowCount": 0,
                 },
             )
             entry["bundleCount"] += 1
             entry["buyGrossUsdc"] += float(row.get("buyGrossUsdc") or 0.0)
             entry["sellGrossUsdc"] += float(row.get("sellGrossUsdc") or 0.0)
             entry["proceedsUsdc"] += float(row.get("proceedsUsdc") or 0.0)
+
+        for row in open_report_rows:
+            symbol = str(row.get("symbol") or "")
+            entry = symbol_map.setdefault(
+                symbol,
+                {
+                    "symbol": symbol,
+                    "bundleCount": 0,
+                    "buyGrossUsdc": 0.0,
+                    "sellGrossUsdc": 0.0,
+                    "proceedsUsdc": 0.0,
+                    "openTradeRowCount": 0,
+                },
+            )
+            entry["openTradeRowCount"] += 1
+            entry["buyGrossUsdc"] += float(row.get("buyGrossUsdc") or 0.0)
 
         symbol_summaries = [
             {
@@ -394,18 +425,23 @@ def build_report(
                 "buyGrossUsdc": round(float(item["buyGrossUsdc"]), 8),
                 "sellGrossUsdc": round(float(item["sellGrossUsdc"]), 8),
                 "proceedsUsdc": round(float(item["proceedsUsdc"]), 8),
+                "openTradeRowCount": int(item["openTradeRowCount"]),
             }
             for item in sorted(symbol_map.values(), key=lambda item: str(item["symbol"]))
         ]
 
-    total_buy = sum(float(item["buyGrossUsdc"]) for item in symbol_summaries)
-    total_sell = sum(float(item["sellGrossUsdc"]) for item in symbol_summaries)
-    total_proceeds = sum(float(item["proceedsUsdc"]) for item in symbol_summaries)
-
     if settle_by_sell_time:
-        total_buy_all = round(total_buy, 8)
-        total_sell_all = round(total_sell, 8)
+        total_buy = sum(float(row.get("buyGrossUsdc") or 0.0) for row in report_rows if bool(row.get("closed")))
+        total_sell = sum(float(row.get("sellGrossUsdc") or 0.0) for row in report_rows if bool(row.get("closed")))
+        total_proceeds = sum(float(row.get("proceedsUsdc") or 0.0) for row in report_rows if bool(row.get("closed")))
+        total_buy_all = round(sum(float(row.get("buyGrossUsdc") or 0.0) for row in report_rows), 8)
+        total_sell_all = round(sum(float(row.get("sellGrossUsdc") or 0.0) for row in report_rows), 8)
     else:
+        total_buy = sum(float(item["buyGrossUsdc"]) for item in symbol_summaries)
+        total_sell = sum(float(item["sellGrossUsdc"]) for item in symbol_summaries)
+        total_proceeds = sum(float(item["proceedsUsdc"]) for item in symbol_summaries)
+
+    if not settle_by_sell_time:
         total_buy_all = round(total_buy_all, 8)
         total_sell_all = round(total_sell_all, 8)
     matched_buy = round(total_buy, 8)
@@ -422,14 +458,18 @@ def build_report(
         "daySummary": {
             "bundleCount": len(bundles),
             "tradeRowCount": len(report_rows),
-            "closedTradeRowCount": len(report_rows) if settle_by_sell_time else sum(
+            "closedTradeRowCount": sum(
                 1 for row in report_rows if bool(row.get("closed"))
             ),
-            "openTradeRowCount": 0 if settle_by_sell_time else sum(
+            "openTradeRowCount": sum(
                 1 for row in report_rows if not bool(row.get("closed"))
             ),
             "symbolCount": len(symbol_summaries),
-            "tradeCount": (len(report_rows) * 2) if settle_by_sell_time else trade_count,
+            "tradeCount": (
+                sum(2 if bool(row.get("closed")) else 1 for row in report_rows)
+                if settle_by_sell_time
+                else trade_count
+            ),
             "buyGrossUsdc": total_buy_all,
             "sellGrossUsdc": total_sell_all,
             "proceedsUsdc": matched_proceeds,

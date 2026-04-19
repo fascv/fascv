@@ -23,7 +23,7 @@ from trading.processes.core import (
     run_core,
 )
 from trading.risk.sizing import RiskConfig, RiskManager
-from trading.types import Features, MarketEvent
+from trading.types import Features, MarketEvent, RiskDecision
 
 
 def _cfg_with_overrides(base: dict, overrides: dict) -> dict:
@@ -448,6 +448,138 @@ class TestCoreControls(unittest.TestCase):
             self._stop_core(ctx, thread)
 
         self.assertEqual(ctx.q_order_intent.qsize(), 1)
+
+    def test_live_auto_safety_exit_does_not_enqueue_order(self):
+        ctx = self._make_ctx(core_overrides={"warmup": {"enabled": False}})
+        thread = self._start_core(ctx)
+        base_ts = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        try:
+            ctx.q_control_core.put(
+                ControlCommand(
+                    ts=base_ts,
+                    action="SYNC_ACCOUNT",
+                    reason="test_position",
+                    payload={
+                        "pair": "ETH/EUR",
+                        "base_asset": "ETH",
+                        "quote_asset": "EUR",
+                        "cash_eur": 10.0,
+                        "position_btc": 0.25,
+                        "avg_entry_price": 100.0,
+                        "reset": True,
+                    },
+                )
+            )
+            self._push_market(ctx, self._event(base_ts, 100.0), settle_sec=0.12)
+            while not ctx.q_order_intent.empty():
+                ctx.q_order_intent.get_nowait()
+
+            with mock.patch.object(
+                RiskManager,
+                "decide",
+                return_value=RiskDecision(
+                    ts=base_ts + timedelta(seconds=1),
+                    allow=True,
+                    target_position_btc=0.0,
+                    reason="hard_stop_loss",
+                    cooldown_remaining=0,
+                ),
+            ):
+                self._push_market(ctx, self._event(base_ts + timedelta(seconds=1), 99.0), settle_sec=0.12)
+        finally:
+            self._stop_core(ctx, thread)
+
+        self.assertEqual(ctx.q_order_intent.qsize(), 0)
+        blocked = [
+            evt.payload.get("reason")
+            for evt in self._journal_events(ctx)
+            if evt.event_type == "core_live_auto_exit_blocked"
+        ]
+        self.assertIn("hard_stop_loss", blocked)
+
+    def test_live_profit_exit_still_enqueues_order(self):
+        ctx = self._make_ctx(core_overrides={"warmup": {"enabled": False}})
+        thread = self._start_core(ctx)
+        base_ts = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        try:
+            ctx.q_control_core.put(
+                ControlCommand(
+                    ts=base_ts,
+                    action="SYNC_ACCOUNT",
+                    reason="test_position",
+                    payload={
+                        "pair": "ETH/EUR",
+                        "base_asset": "ETH",
+                        "quote_asset": "EUR",
+                        "cash_eur": 10.0,
+                        "position_btc": 0.25,
+                        "avg_entry_price": 100.0,
+                        "reset": True,
+                    },
+                )
+            )
+            self._push_market(ctx, self._event(base_ts, 100.0), settle_sec=0.12)
+            while not ctx.q_order_intent.empty():
+                ctx.q_order_intent.get_nowait()
+
+            with mock.patch.object(
+                RiskManager,
+                "decide",
+                return_value=RiskDecision(
+                    ts=base_ts + timedelta(seconds=1),
+                    allow=True,
+                    target_position_btc=0.0,
+                    reason="profit_roll_exit",
+                    cooldown_remaining=0,
+                ),
+            ):
+                self._push_market(ctx, self._event(base_ts + timedelta(seconds=1), 101.0), settle_sec=0.12)
+        finally:
+            self._stop_core(ctx, thread)
+
+        self.assertEqual(ctx.q_order_intent.qsize(), 1)
+
+    def test_live_hard_take_profit_does_not_enqueue_order(self):
+        ctx = self._make_ctx(core_overrides={"warmup": {"enabled": False}})
+        thread = self._start_core(ctx)
+        base_ts = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        try:
+            ctx.q_control_core.put(
+                ControlCommand(
+                    ts=base_ts,
+                    action="SYNC_ACCOUNT",
+                    reason="test_position",
+                    payload={
+                        "pair": "ETH/EUR",
+                        "base_asset": "ETH",
+                        "quote_asset": "EUR",
+                        "cash_eur": 10.0,
+                        "position_btc": 0.25,
+                        "avg_entry_price": 100.0,
+                        "reset": True,
+                    },
+                )
+            )
+            self._push_market(ctx, self._event(base_ts, 100.0), settle_sec=0.12)
+            while not ctx.q_order_intent.empty():
+                ctx.q_order_intent.get_nowait()
+
+            with mock.patch.object(
+                RiskManager,
+                "decide",
+                return_value=RiskDecision(
+                    ts=base_ts + timedelta(seconds=1),
+                    allow=True,
+                    target_position_btc=0.0,
+                    reason="hard_take_profit",
+                    cooldown_remaining=0,
+                ),
+            ):
+                self._push_market(ctx, self._event(base_ts + timedelta(seconds=1), 101.0), settle_sec=0.12)
+        finally:
+            self._stop_core(ctx, thread)
+
+        self.assertEqual(ctx.q_order_intent.qsize(), 0)
 
     def test_sync_account_reset_reanchors_daily_loss_reference_after_pre_sync_tick(self):
         ctx = self._make_ctx(

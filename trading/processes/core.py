@@ -46,6 +46,9 @@ RECOVERABLE_EXIT_REASONS = {
     "exit_bypass_gate",
     "reversal_exit_after_break_even",
 }
+LIVE_ALLOWED_AUTO_EXIT_REASONS = {
+    "profit_roll_exit",
+}
 
 
 def _cfg(cfg: Dict[str, Any], path: str, default: Any) -> Any:
@@ -153,6 +156,54 @@ def _parse_iso_datetime(raw: Any) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _apply_live_risk_policy(risk_cfg: RiskConfig, *, mode: str) -> RiskConfig:
+    if str(mode or "").strip().lower() != "live":
+        return risk_cfg
+    cfg = copy.deepcopy(risk_cfg)
+    cfg.profit_only_auto_exits = True
+    cfg.exit_edge_bps = float("-inf")
+    cfg.exit_bypass_gate_edge_bps = float("-inf")
+    cfg.failed_start_exit_enabled = False
+    cfg.failed_start_min_bars = 0
+    cfg.failed_start_max_bars = 0
+    cfg.failed_start_min_rebound_bps = 0.0
+    cfg.failed_start_loss_bps = 0.0
+    cfg.chop_break_even_reclaim_enabled = False
+    cfg.chop_break_even_reclaim_min_bars = 0
+    cfg.chop_break_even_reclaim_min_drawdown_bps = 0.0
+    cfg.chop_break_even_reclaim_max_edge_bps = 0.0
+    cfg.chop_break_even_reclaim_cross_window_bars = 0
+    cfg.chop_break_even_reclaim_min_crosses = 0
+    cfg.require_break_even_for_exit = True
+    cfg.min_exit_profit_bps = 0.0
+    cfg.allow_reversal_exit_after_break_even = False
+    cfg.time_break_even_floor_enabled = False
+    cfg.time_break_even_floor_bars = 0
+    cfg.red_candle_exit_enabled = False
+    cfg.red_candle_window_bars = 0
+    cfg.green_candle_take_exit_enabled = False
+    cfg.green_candle_take_min_bars = 0
+    cfg.green_candle_take_max_bars = 0
+    cfg.green_candle_take_required_green_bars = 0
+    cfg.green_candle_take_min_profit_bps = 0.0
+    cfg.hard_take_profit_bps = 0.0
+    cfg.dynamic_profit_target_enabled = False
+    cfg.dynamic_profit_target_bps_at_low = 0.0
+    cfg.dynamic_profit_break_even_from_high_pct = 0.0
+    cfg.hard_stop_loss_bps = 0.0
+    cfg.hard_take_profit_only_in_range = False
+    cfg.trailing_stop_enabled = False
+    cfg.trailing_activation_bps = 0.0
+    cfg.trailing_stop_bps = 0.0
+    cfg.trailing_stop_atr_mult = 0.0
+    cfg.peak_profit_retrace_enabled = False
+    cfg.peak_profit_retrace_arm_bps = 0.0
+    cfg.peak_profit_retrace_pct = 0.0
+    cfg.profit_roll_min_keep_profit_bps = 0.0
+    cfg.full_position_only = True
+    return cfg
 
 
 def _instrument_pair_and_symbol(cfg: Dict[str, Any]) -> tuple[str, str]:
@@ -786,7 +837,11 @@ def _inject_alpha_features(features: Any, alpha_meta: Dict[str, Any]) -> None:
     features.values["alpha_breakout_down_bps"] = float(alpha_meta.get("breakout_down_bps") or 0.0)
 
 
-def _build_components(cfg: Dict[str, Any]) -> tuple[FeatureEngine, AlphaModel, CostModel, TradeabilityGate, RiskManager, OrderBuilder, StateManager]:
+def _build_components(
+    cfg: Dict[str, Any],
+    *,
+    mode: str,
+) -> tuple[FeatureEngine, AlphaModel, CostModel, TradeabilityGate, RiskManager, OrderBuilder, StateManager]:
     default_micro = _cfg(cfg, "data.default_micro", {})
     min_trade_btc = float(_cfg(cfg, "order.min_trade_btc", 0.0001))
     sync_min_position_btc = float(_cfg(cfg, "exec.sync_min_position_btc", 0.0))
@@ -832,8 +887,7 @@ def _build_components(cfg: Dict[str, Any]) -> tuple[FeatureEngine, AlphaModel, C
         )
     )
 
-    risk = RiskManager(
-        RiskConfig(
+    risk_cfg = RiskConfig(
             max_exposure_eur=float(_cfg(cfg, "risk.max_exposure_eur", 50.0)),
             vol_target_bps=float(_cfg(cfg, "risk.vol_target_bps", 80.0)),
             daily_loss_limit_eur=float(_cfg(cfg, "risk.daily_loss_limit_eur", 10.0)),
@@ -997,8 +1051,8 @@ def _build_components(cfg: Dict[str, Any]) -> tuple[FeatureEngine, AlphaModel, C
                 _cfg(cfg, "risk.max_entry_notional_to_depth_ratio", 0.0)
             ),
             full_position_only=bool(_cfg(cfg, "risk.full_position_only", False)),
-        )
     )
+    risk = RiskManager(_apply_live_risk_policy(risk_cfg, mode=mode))
 
     order_builder = OrderBuilder(
         OrderConfig(
@@ -1023,7 +1077,10 @@ def run_core(ctx: ProcessContext) -> None:
     alpha_override_path = _cfg(cfg, "alpha.override_path", "")
     if alpha_override_path:
         cfg = apply_yaml_overlay(cfg, str(alpha_override_path))
-    feature_engine, alpha_model, cost_model, gate, risk_manager, order_builder, state_manager = _build_components(cfg)
+    feature_engine, alpha_model, cost_model, gate, risk_manager, order_builder, state_manager = _build_components(
+        cfg,
+        mode=ctx.mode,
+    )
 
     # Simulation should deploy the full budget amount when it decides to take risk.
     # Otherwise vol/gate scaling can shrink the position (confusing for sim UX).
@@ -1803,7 +1860,7 @@ def run_core(ctx: ProcessContext) -> None:
                 new_risk_manager,
                 new_order_builder,
                 _,
-            ) = _build_components(reloaded_cfg)
+            ) = _build_components(reloaded_cfg, mode=ctx.mode)
             _copy_risk_runtime_state(old_risk_manager, new_risk_manager)
 
             if ctx.mode == "sim":
@@ -2185,8 +2242,7 @@ def run_core(ctx: ProcessContext) -> None:
 
                 # Always apply the new max exposure (even without a reset).
                 rcfg = risk_manager.config
-                risk_manager = RiskManager(
-                    RiskConfig(
+                new_risk_cfg = RiskConfig(
                         max_exposure_eur=float(max_exposure_eur),
                         vol_target_bps=rcfg.vol_target_bps,
                         daily_loss_limit_eur=rcfg.daily_loss_limit_eur,
@@ -2341,7 +2397,7 @@ def run_core(ctx: ProcessContext) -> None:
                         ),
                         full_position_only=getattr(rcfg, "full_position_only", False),
                     )
-                )
+                risk_manager = RiskManager(_apply_live_risk_policy(new_risk_cfg, mode=ctx.mode))
                 runtime_pipeline["risk_manager"] = risk_manager
                 # Sim UX: keep cycle trade notional in sync with the configured amount.
                 if ctx.mode == "sim":
@@ -3360,6 +3416,30 @@ def run_core(ctx: ProcessContext) -> None:
                         reducing_exposure = abs(tgt_pos) + eps < abs(cur_pos)
                         flattening = abs(tgt_pos) <= eps and abs(cur_pos) > eps
                         can_emit_orders = bool(gate_decision.allow or reducing_exposure or flattening)
+                        if can_emit_orders and (reducing_exposure or flattening):
+                            profit_only_auto_exits = bool(
+                                getattr(active_risk_manager.config, "profit_only_auto_exits", False)
+                            )
+                            live_auto_exit_lock = str(ctx.mode or "").strip().lower() == "live"
+                            risk_reason_norm = str(risk.reason or "").strip().lower()
+                            if (
+                                (live_auto_exit_lock or profit_only_auto_exits)
+                                and risk_reason_norm not in LIVE_ALLOWED_AUTO_EXIT_REASONS
+                            ):
+                                can_emit_orders = False
+                                _send_journal(
+                                    ctx,
+                                    "core_live_auto_exit_blocked"
+                                    if live_auto_exit_lock
+                                    else "core_profit_only_exit_blocked",
+                                    {
+                                        "ts": event.ts.isoformat(),
+                                        "reason": risk.reason,
+                                        "mode": ctx.mode,
+                                        "current_position_btc": cur_pos,
+                                        "target_position_btc": tgt_pos,
+                                    },
+                                )
                     if can_emit_orders:
                         now_rl = time.time()
                         while order_times and now_rl - order_times[0] > 60.0:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import ExitStack
 import io
 import json
 import subprocess
@@ -22,6 +23,16 @@ from trading.rotation_strategy_runtime import (
 
 
 class TestRotationStrategyRuntime(unittest.TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self._list_running_patch = mock.patch.object(
+            rotation_apply_active_lanes,
+            "list_running_rotation_symbols",
+            return_value=[],
+        )
+        self._list_running_patch.start()
+        self.addCleanup(self._list_running_patch.stop)
+
     def test_rotation_strategy_to_alpha_type_maps_meta_families(self) -> None:
         self.assertEqual(rotation_strategy_to_alpha_type("staircase"), "continuation")
         self.assertEqual(rotation_strategy_to_alpha_type("pullback_continuation"), "continuation")
@@ -1053,6 +1064,182 @@ class TestRotationStrategyRuntime(unittest.TestCase):
             self.assertFalse(cleanup_lane.called)
             payload = json.loads(output.getvalue())
             self.assertEqual(payload["watch_symbols"], [])
+
+    def test_main_stops_running_unmanaged_lane_without_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            active_path = tmp_path / "rotation_active_lanes.json"
+            active_path.write_text(
+                json.dumps(
+                    {
+                        "selected": [],
+                        "watch_symbols": [],
+                        "selected_strategy_map": {},
+                        "fraction": 0.0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            fake_lanes = {
+                "SIGN": {
+                    "slug": "sign",
+                    "ports": (8111,),
+                    "config": "configs/live_binance_sign_usdc_rotation.yaml",
+                }
+            }
+            output = io.StringIO()
+
+            def fake_unit_state(unit: str) -> tuple[str, str]:
+                if unit == "codex-rotation-old.service":
+                    return ("active", "running")
+                return ("inactive", "dead")
+
+            with ExitStack() as stack:
+                stack.enter_context(mock.patch.object(rotation_apply_active_lanes, "ACTIVE_FILE", active_path))
+                stack.enter_context(mock.patch.object(rotation_apply_active_lanes, "LANES", fake_lanes))
+                stack.enter_context(mock.patch.object(rotation_apply_active_lanes, "POOL", ["SIGN"]))
+                stack.enter_context(
+                    mock.patch.object(rotation_apply_active_lanes, "_load_manual_watch_symbols", return_value=[])
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        rotation_apply_active_lanes,
+                        "_load_manual_entry_exit_only_config",
+                        return_value=(False, set()),
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(rotation_apply_active_lanes, "list_running_rotation_symbols", return_value=["OLD"])
+                )
+                stack.enter_context(mock.patch.object(rotation_apply_active_lanes, "_unit_env_int", return_value=8242))
+                stack.enter_context(mock.patch.object(rotation_apply_active_lanes, "_http_ok", return_value=False))
+                stack.enter_context(
+                    mock.patch.object(rotation_apply_active_lanes, "_unit_state", side_effect=fake_unit_state)
+                )
+                stack.enter_context(
+                    mock.patch.object(rotation_apply_active_lanes, "_lane_runtime_config_bootstrapped", return_value=True)
+                )
+                stack.enter_context(mock.patch.object(rotation_apply_active_lanes, "_start_lane"))
+                stack.enter_context(mock.patch.object(rotation_apply_active_lanes, "_reload_lane"))
+                stack.enter_context(mock.patch.object(rotation_apply_active_lanes, "_stop_lane"))
+                stop_unmanaged = stack.enter_context(
+                    mock.patch.object(rotation_apply_active_lanes, "_stop_unmanaged_lane")
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        rotation_apply_active_lanes,
+                        "_cleanup_lane_orphan_processes",
+                        return_value=[],
+                    )
+                )
+                stack.enter_context(mock.patch.object(rotation_apply_active_lanes, "_set_lane_active"))
+                stack.enter_context(
+                    mock.patch.object(rotation_apply_active_lanes, "_set_lane_watch_only", return_value=False)
+                )
+                stack.enter_context(mock.patch.object(sys, "argv", ["rotation_apply_active_lanes.py"]))
+                stack.enter_context(mock.patch("sys.stdout", output))
+                rotation_apply_active_lanes.main()
+
+            stop_unmanaged.assert_called_once_with("OLD")
+            payload = json.loads(output.getvalue())
+            self.assertEqual(payload["unmanaged_stopped_symbols"], ["OLD"])
+            self.assertEqual(payload["unmanaged_inventory_protected_symbols"], [])
+
+    def test_main_keeps_running_unmanaged_lane_when_inventory_open(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            active_path = tmp_path / "rotation_active_lanes.json"
+            active_path.write_text(
+                json.dumps(
+                    {
+                        "selected": [],
+                        "watch_symbols": [],
+                        "selected_strategy_map": {},
+                        "fraction": 0.0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            fake_lanes = {
+                "SIGN": {
+                    "slug": "sign",
+                    "ports": (8111,),
+                    "config": "configs/live_binance_sign_usdc_rotation.yaml",
+                }
+            }
+            output = io.StringIO()
+
+            def fake_unit_state(unit: str) -> tuple[str, str]:
+                if unit == "codex-rotation-old.service":
+                    return ("active", "running")
+                return ("inactive", "dead")
+
+            def fake_http_ok(port: int, timeout: float = 1.0) -> bool:
+                return port == 8242
+
+            with ExitStack() as stack:
+                stack.enter_context(mock.patch.object(rotation_apply_active_lanes, "ACTIVE_FILE", active_path))
+                stack.enter_context(mock.patch.object(rotation_apply_active_lanes, "LANES", fake_lanes))
+                stack.enter_context(mock.patch.object(rotation_apply_active_lanes, "POOL", ["SIGN"]))
+                stack.enter_context(
+                    mock.patch.object(rotation_apply_active_lanes, "_load_manual_watch_symbols", return_value=[])
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        rotation_apply_active_lanes,
+                        "_load_manual_entry_exit_only_config",
+                        return_value=(False, set()),
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(rotation_apply_active_lanes, "list_running_rotation_symbols", return_value=["OLD"])
+                )
+                stack.enter_context(mock.patch.object(rotation_apply_active_lanes, "_unit_env_int", return_value=8242))
+                stack.enter_context(mock.patch.object(rotation_apply_active_lanes, "_http_ok", side_effect=fake_http_ok))
+                stack.enter_context(
+                    mock.patch.object(rotation_apply_active_lanes, "_unit_state", side_effect=fake_unit_state)
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        rotation_apply_active_lanes,
+                        "_lane_snapshot",
+                        return_value={
+                            "position_value_eur": 7.2,
+                            "position_btc": 0.0,
+                            "base_balance_notional_eur": 7.2,
+                            "open_orders_count": 0,
+                            "trading_enabled": False,
+                        },
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(rotation_apply_active_lanes, "_lane_runtime_config_bootstrapped", return_value=True)
+                )
+                stack.enter_context(mock.patch.object(rotation_apply_active_lanes, "_start_lane"))
+                stack.enter_context(mock.patch.object(rotation_apply_active_lanes, "_reload_lane"))
+                stack.enter_context(mock.patch.object(rotation_apply_active_lanes, "_stop_lane"))
+                stop_unmanaged = stack.enter_context(
+                    mock.patch.object(rotation_apply_active_lanes, "_stop_unmanaged_lane")
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        rotation_apply_active_lanes,
+                        "_cleanup_lane_orphan_processes",
+                        return_value=[],
+                    )
+                )
+                stack.enter_context(mock.patch.object(rotation_apply_active_lanes, "_set_lane_active"))
+                stack.enter_context(
+                    mock.patch.object(rotation_apply_active_lanes, "_set_lane_watch_only", return_value=False)
+                )
+                stack.enter_context(mock.patch.object(sys, "argv", ["rotation_apply_active_lanes.py"]))
+                stack.enter_context(mock.patch("sys.stdout", output))
+                rotation_apply_active_lanes.main()
+
+            self.assertFalse(stop_unmanaged.called)
+            payload = json.loads(output.getvalue())
+            self.assertEqual(payload["unmanaged_stopped_symbols"], [])
+            self.assertEqual(payload["unmanaged_inventory_protected_symbols"], ["OLD"])
 
     def test_lane_inventory_protection_ignores_dust_without_open_orders(self) -> None:
         with mock.patch.object(rotation_apply_active_lanes, "INVENTORY_PROTECT_MIN_NOTIONAL_EUR", 1.0):

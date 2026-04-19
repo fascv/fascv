@@ -84,6 +84,46 @@ class TestRotationWatchPoolRefresh(unittest.TestCase):
         self.assertIn("SIGN", watch_symbols)
         self.assertIn("AAVE", watch_symbols)
 
+    def test_allowed_symbols_filters_external_candidates_and_fills_allowed_pool(self) -> None:
+        active_state = {
+            "selected": ["ZRO"],
+            "watch_symbols": ["ZRO", "BONK"],
+            "all_rows": [
+                {"symbol": "ZRO", "keep_open": False, "eligible": True, "gate_reason": ""},
+                {"symbol": "BONK", "keep_open": False, "eligible": True, "gate_reason": ""},
+                {"symbol": "ZK", "keep_open": False, "eligible": True, "gate_reason": ""},
+            ],
+        }
+        universe_report = {
+            "top_candidates": [
+                {"symbol": "ZK", "bucket": "keep"},
+                {"symbol": "BONK", "bucket": "keep"},
+            ],
+            "recommended_pool": ["ZK", "BONK"],
+            "strategy_rankings": {
+                "rebound": [
+                    {"symbol": "ZK", "bucket": "keep"},
+                    {"symbol": "BONK", "bucket": "keep"},
+                ],
+            },
+        }
+        meta_report = {
+            "recommendation": {
+                "candidate_overrides": ["ZK", "BONK"],
+            },
+        }
+
+        watch_symbols, scored = build_watch_pool(
+            active_state=active_state,
+            universe_report=universe_report,
+            meta_report=meta_report,
+            target_size=4,
+            allowed_symbols=["ZRO", "BONK", "ADA", "TRX"],
+        )
+
+        self.assertNotIn("ZK", scored)
+        self.assertEqual(watch_symbols, ["ZRO", "BONK", "ADA", "TRX"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -209,6 +209,56 @@ class TestBinanceTradeMirror(unittest.TestCase):
         self.assertEqual(report["daySummary"]["bundleCount"], 1)
         self.assertAlmostEqual(report["daySummary"]["proceedsUsdc"], 0.19, places=9)
 
+    def test_collect_trades_mirror_keeps_open_buys_visible_in_day_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            mirror_dir = Path(tmp)
+            rows = [
+                {
+                    "symbol": "BNBUSDC",
+                    "coin": "BNB",
+                    "side": "BUY",
+                    "orderId": "1",
+                    "tradeId": "101",
+                    "timeMs": 1774099201000,
+                    "timeIso": "2026-03-21T00:00:01Z",
+                    "quantity": 0.1,
+                    "grossUsdc": 62.0,
+                },
+                {
+                    "symbol": "BNBUSDC",
+                    "coin": "BNB",
+                    "side": "BUY",
+                    "orderId": "1",
+                    "tradeId": "102",
+                    "timeMs": 1774099201000,
+                    "timeIso": "2026-03-21T00:00:01Z",
+                    "quantity": 0.05,
+                    "grossUsdc": 31.0,
+                },
+            ]
+            trade_mirror.write_mirror_rows("BNBUSDC", rows, mirror_dir)
+            report = trade_mirror.collect_trades_mirror(
+                "2026-03-21T00:00:00Z",
+                "2026-03-22T00:00:00Z",
+                ["BNBUSDC"],
+                mirror_dir=mirror_dir,
+            )
+
+        self.assertEqual(report["source"], "binance_mirror")
+        self.assertEqual(report["fillEvents"], 2)
+        self.assertEqual(report["daySummary"]["bundleCount"], 0)
+        self.assertEqual(report["daySummary"]["tradeRowCount"], 1)
+        self.assertEqual(report["daySummary"]["closedTradeRowCount"], 0)
+        self.assertEqual(report["daySummary"]["openTradeRowCount"], 1)
+        self.assertAlmostEqual(report["daySummary"]["buyGrossUsdc"], 93.0, places=9)
+        self.assertAlmostEqual(report["daySummary"]["sellGrossUsdc"], 0.0, places=9)
+        self.assertAlmostEqual(report["daySummary"]["proceedsUsdc"], 0.0, places=9)
+        self.assertEqual(report["tradeRows"][0]["symbol"], "BNBUSDC")
+        self.assertFalse(report["tradeRows"][0]["closed"])
+        self.assertEqual(report["symbolSummaries"][0]["symbol"], "BNBUSDC")
+        self.assertEqual(report["symbolSummaries"][0]["bundleCount"], 0)
+        self.assertEqual(report["symbolSummaries"][0]["openTradeRowCount"], 1)
+
     def test_sync_symbol_window_merges_and_dedupes_trade_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             mirror_dir = Path(tmp)

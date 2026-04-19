@@ -446,6 +446,7 @@ class RiskManager:
         profit_only_auto_exits = bool(getattr(self.config, "profit_only_auto_exits", False))
         min_hold_bars = max(0, int(getattr(self.config, "min_hold_bars", 0)))
         failed_start_exit_enabled = bool(getattr(self.config, "failed_start_exit_enabled", False))
+        failed_start_min_bars = max(0, int(getattr(self.config, "failed_start_min_bars", 0)))
         failed_start_max_bars = max(0, int(getattr(self.config, "failed_start_max_bars", 0)))
         failed_start_min_rebound_bps = max(
             0.0,
@@ -475,6 +476,9 @@ class RiskManager:
             int(getattr(self.config, "chop_break_even_reclaim_min_crosses", 0)),
         )
         require_break_even_for_exit = bool(getattr(self.config, "require_break_even_for_exit", False))
+        allow_reversal_exit_after_break_even = bool(
+            getattr(self.config, "allow_reversal_exit_after_break_even", False)
+        )
         min_exit_profit_bps = max(0.0, float(getattr(self.config, "min_exit_profit_bps", 0.0)))
         green_candle_take_exit_enabled = bool(
             getattr(self.config, "green_candle_take_exit_enabled", False)
@@ -494,6 +498,18 @@ class RiskManager:
         green_candle_take_min_profit_bps = max(
             0.0,
             float(getattr(self.config, "green_candle_take_min_profit_bps", 0.0)),
+        )
+        time_break_even_floor_enabled = bool(
+            getattr(self.config, "time_break_even_floor_enabled", False)
+        )
+        time_break_even_floor_bars = max(
+            0,
+            int(getattr(self.config, "time_break_even_floor_bars", 0)),
+        )
+        red_candle_exit_enabled = bool(getattr(self.config, "red_candle_exit_enabled", False))
+        red_candle_window_bars = max(
+            0,
+            int(getattr(self.config, "red_candle_window_bars", 0)),
         )
         hard_take_profit_bps = max(0.0, float(getattr(self.config, "hard_take_profit_bps", 0.0)))
         dynamic_profit_target_enabled = bool(getattr(self.config, "dynamic_profit_target_enabled", False))
@@ -594,6 +610,7 @@ class RiskManager:
             exit_edge_bps = float("-inf")
             exit_bypass_gate_edge_bps = float("-inf")
             failed_start_exit_enabled = False
+            failed_start_min_bars = 0
             chop_break_even_reclaim_enabled = False
             require_break_even_for_exit = True
             hard_stop_loss_bps = 0.0
@@ -673,7 +690,7 @@ class RiskManager:
             return max(0.0, (required_price / avg_entry - 1.0) * 10000.0)
 
         def _reversal_exit_after_break_even_ok() -> bool:
-            if not bool(getattr(self.config, "allow_reversal_exit_after_break_even", False)):
+            if not allow_reversal_exit_after_break_even:
                 return False
             if pos <= eps or price <= 0.0:
                 return False
@@ -686,11 +703,11 @@ class RiskManager:
             return peak > 0.0 and price < peak
 
         def _time_break_even_floor_hit() -> bool:
-            if not bool(getattr(self.config, "time_break_even_floor_enabled", False)):
+            if not time_break_even_floor_enabled:
                 return False
             if pos <= eps or price <= 0.0:
                 return False
-            floor_bars = max(0, int(getattr(self.config, "time_break_even_floor_bars", 0)))
+            floor_bars = max(0, int(time_break_even_floor_bars))
             if floor_bars <= 0 or self._bars_in_position < floor_bars:
                 return False
             required_price = _break_even_required_price()
@@ -833,11 +850,11 @@ class RiskManager:
             return price <= required_price
 
         def _red_candle_exit_hit() -> bool:
-            if not bool(getattr(self.config, "red_candle_exit_enabled", False)):
+            if not red_candle_exit_enabled:
                 return False
             if pos <= eps or price <= 0.0:
                 return False
-            window_bars = max(0, int(getattr(self.config, "red_candle_window_bars", 0)))
+            window_bars = max(0, int(red_candle_window_bars))
             # Require N consecutive down-closing completed bars.
             # With close-only sampling this means the last N+1 closes are
             # strictly descending: p0 > p1 > ... > pN.
@@ -986,7 +1003,6 @@ class RiskManager:
         def _failed_start_exit_hit() -> bool:
             if not failed_start_exit_enabled or pos <= eps:
                 return False
-            failed_start_min_bars = max(0, int(getattr(self.config, "failed_start_min_bars", 0)))
             if failed_start_max_bars <= 0 or self._bars_in_position <= 0:
                 return False
             breakout_state_up = float(features.values.get("alpha_breakout_state_up", 0.0) or 0.0) >= 0.5
@@ -1493,7 +1509,6 @@ class RiskManager:
                 "edge_exit",
                 "exit_bypass_gate",
                 "reversal_exit_after_break_even",
-                "corridor_stage_roll_exit",
             }:
                 self._short_loss_cluster_count = 0
                 self._short_loss_cluster_age_bars = 0
@@ -1640,7 +1655,7 @@ class RiskManager:
                                             cooldown_remaining=0,
                                         )
                                     self._reentry_cooldown_remaining = _arm_reentry_cooldown(
-                                        "corridor_stage_roll_exit"
+                                        "profit_roll_exit"
                                     )
                                     self._corridor_entry_stage_pct = 0.0
                                     self._corridor_pending_entry_stage_pct = 0.0
@@ -1650,7 +1665,7 @@ class RiskManager:
                                         ts=features.ts,
                                         allow=True,
                                         target_position_btc=0.0,
-                                        reason="corridor_stage_roll_exit",
+                                        reason="profit_roll_exit",
                                         cooldown_remaining=max(0, self._cooldown_remaining),
                                     )
                                 return RiskDecision(
@@ -1746,7 +1761,7 @@ class RiskManager:
                                             cooldown_remaining=0,
                                         )
                                     self._reentry_cooldown_remaining = _arm_reentry_cooldown(
-                                        "corridor_stage_roll_exit"
+                                        "profit_roll_exit"
                                     )
                                     self._corridor_entry_stage_pct = 0.0
                                     self._corridor_pending_entry_stage_pct = 0.0
@@ -1756,7 +1771,7 @@ class RiskManager:
                                         ts=features.ts,
                                         allow=True,
                                         target_position_btc=0.0,
-                                        reason="corridor_stage_roll_exit",
+                                        reason="profit_roll_exit",
                                         cooldown_remaining=max(0, self._cooldown_remaining),
                                     )
                 else:
@@ -1782,7 +1797,7 @@ class RiskManager:
                                     reason="corridor_stage_hold_break_even",
                                     cooldown_remaining=0,
                                 )
-                            self._reentry_cooldown_remaining = _arm_reentry_cooldown("corridor_stage_roll_exit")
+                            self._reentry_cooldown_remaining = _arm_reentry_cooldown("profit_roll_exit")
                             self._corridor_entry_stage_pct = 0.0
                             self._corridor_pending_entry_stage_pct = 0.0
                             self._corridor_exit_armed = False
@@ -1791,7 +1806,7 @@ class RiskManager:
                                 ts=features.ts,
                                 allow=True,
                                 target_position_btc=0.0,
-                                reason="corridor_stage_roll_exit",
+                                reason="profit_roll_exit",
                                 cooldown_remaining=max(0, self._cooldown_remaining),
                             )
                 return RiskDecision(

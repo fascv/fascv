@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import subprocess
 import time
@@ -89,6 +90,7 @@ IPC_MAX_HEARTBEAT_QUEUE_SIZE = _env_int(
     64,
     minimum=8,
 )
+ROTATION_UNIT_RE = re.compile(r"codex-rotation-([a-z0-9]+)\.service")
 
 
 def _lane_base_config_path(symbol: str) -> Path:
@@ -102,6 +104,38 @@ def _lane_runtime_config_path(symbol: str) -> Path:
 
 def _lane_unit_name(symbol: str) -> str:
     return f"codex-rotation-{LANES[symbol]['slug']}.service"
+
+
+def list_running_rotation_symbols() -> list[str]:
+    try:
+        out = subprocess.check_output(
+            [
+                "systemctl",
+                "--user",
+                "list-units",
+                "codex-rotation-*.service",
+                "--state=running",
+                "--no-pager",
+            ],
+            cwd=REPO_ROOT,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return []
+
+    symbols: list[str] = []
+    for line in out.splitlines():
+        match = ROTATION_UNIT_RE.search(line)
+        if not match:
+            continue
+        slug = str(match.group(1)).strip().lower()
+        if slug in {"selector", "status", "http", "watch-pool-refresh"}:
+            continue
+        symbol = slug.upper()
+        if symbol and symbol not in symbols:
+            symbols.append(symbol)
+    return symbols
 
 
 def _state_row_strategy_map(state: dict) -> dict[str, str]:
@@ -406,6 +440,25 @@ def _unit_environment(unit: str) -> dict[str, str]:
             env[key] = value
         return env
     return {}
+
+
+def _unit_env_int(unit: str, key: str) -> int:
+    env = _unit_environment(unit)
+    try:
+        return int(str(env.get(key, "")).strip() or 0)
+    except Exception:
+        return 0
+
+
+def _unit_env_path(unit: str, key: str) -> Path | None:
+    env = _unit_environment(unit)
+    raw = str(env.get(key, "")).strip()
+    if not raw:
+        return None
+    try:
+        return Path(_normalize_unit_config_path(raw))
+    except Exception:
+        return None
 
 
 def _unit_main_pid(unit: str) -> int:
@@ -1121,6 +1174,60 @@ def _stop_lane(symbol: str) -> None:
             pass
 
 
+def _stop_unmanaged_lane(symbol: str) -> None:
+    slug = str(symbol or "").strip().lower()
+    if not slug:
+        return
+    unit = f"codex-rotation-{slug}.service"
+    control_port = _unit_env_int(unit, "CONTROL_PORT")
+    disable_file = _unit_env_path(unit, "DISABLE_FILE") or (REPO_ROOT / "logs" / f"{slug}_rotation_guard.disabled")
+    pid_file = _unit_env_path(unit, "PID_FILE") or (REPO_ROOT / "logs" / f"{slug}_rotation_guard.pid")
+    child_pid_file = _unit_env_path(unit, "CHILD_PID_FILE") or (REPO_ROOT / "logs" / f"{slug}_rotation_guard.child.pid")
+
+    disable_file.parent.mkdir(parents=True, exist_ok=True)
+    disable_file.write_text("", encoding="utf-8")
+
+    if control_port > 0 and _http_ok(control_port, timeout=0.7):
+        _post_control(control_port, "/pause", timeout=1.0)
+        _post_control(control_port, "/cancel_all", timeout=1.0)
+
+    for path in (child_pid_file, pid_file):
+        try:
+            pid = int(path.read_text(encoding="utf-8").strip())
+        except Exception:
+            pid = 0
+        _kill_pid(pid, graceful=False)
+
+    subprocess.run(
+        ["systemctl", "--user", "kill", "--kill-who=all", "--signal=SIGKILL", unit],
+        cwd=REPO_ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    deadline = time.time() + 8.0
+    while time.time() < deadline:
+        active_state, sub_state = _unit_state(unit)
+        if active_state in {"inactive", "failed", ""}:
+            break
+        if sub_state == "dead":
+            break
+        time.sleep(0.2)
+    subprocess.run(
+        ["systemctl", "--user", "reset-failed", unit],
+        cwd=REPO_ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+
+    for path in (pid_file, child_pid_file):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def _start_lane(symbol: str, *, force_recreate: bool = False) -> None:
     lane = LANES[symbol]
     slug = lane["slug"]
@@ -1430,6 +1537,9 @@ def main() -> None:
     deferred_runtime_symbols: set[str] = set()
     restart_required_symbols: set[str] = set()
     deferred_watch_only_symbols: list[dict[str, str]] = []
+    managed_stopped_symbols: list[str] = []
+    unmanaged_stopped_symbols: list[str] = []
+    unmanaged_inventory_protected_symbols: list[str] = []
     for symbol in watch_symbols:
         # Non-selected lanes must never re-enter automatically; keep them exit-only.
         manual_entry_exit_only = bool(
@@ -1523,7 +1633,25 @@ def main() -> None:
         if not lane_running and active_state in {"", "inactive"} and sub_state in {"", "dead", "failed", "exited"}:
             continue
         _stop_lane(symbol)
+        managed_stopped_symbols.append(symbol)
         _cleanup_lane_orphan_processes(symbol)
+
+    managed_watch_set = set(watch_symbols)
+    for symbol in list_running_rotation_symbols():
+        if symbol in managed_watch_set or symbol in LANES:
+            continue
+        unit_service = f"codex-rotation-{symbol.lower()}.service"
+        control_port = _unit_env_int(unit_service, "CONTROL_PORT")
+        lane_running = control_port > 0 and _http_ok(control_port, timeout=0.5)
+        active_state, sub_state = _unit_state(unit_service)
+        if not lane_running and active_state in {"", "inactive"} and sub_state in {"", "dead", "failed", "exited"}:
+            continue
+        snap = _lane_snapshot(symbol, control_port) if lane_running and control_port > 0 else None
+        if _lane_has_active_inventory(snap):
+            unmanaged_inventory_protected_symbols.append(symbol)
+            continue
+        _stop_unmanaged_lane(symbol)
+        unmanaged_stopped_symbols.append(symbol)
 
     failed_start: list[dict[str, str]] = []
     orphan_cleanup: list[dict[str, object]] = []
@@ -1649,6 +1777,9 @@ def main() -> None:
                 "deferred_runtime_updates": deferred_runtime_updates,
                 "deferred_watch_only": deferred_watch_only_symbols,
                 "inventory_protected_watch_symbols": sorted(inventory_protected_watch_symbols),
+                "managed_stopped_symbols": sorted(managed_stopped_symbols),
+                "unmanaged_stopped_symbols": sorted(unmanaged_stopped_symbols),
+                "unmanaged_inventory_protected_symbols": sorted(unmanaged_inventory_protected_symbols),
                 "selected_shared_equity_est_usdc": selected_shared_equity,
                 "selected_expected_notional_map": selected_expected_notional_map,
                 "runtime_budget_overrides": runtime_budget_overrides,

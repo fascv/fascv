@@ -104,7 +104,7 @@ class TestRiskCorridorStagedMode(unittest.TestCase):
             gate_block,
             predicted_edge_bps=-50.0,
         )
-        self.assertEqual(exit_decision.reason, "corridor_stage_roll_exit")
+        self.assertEqual(exit_decision.reason, "profit_roll_exit")
         self.assertEqual(exit_decision.target_position_btc, 0.0)
 
     def test_corridor_mode_open_position_seeds_to_next_higher_stage(self) -> None:
