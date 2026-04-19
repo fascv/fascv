@@ -13,6 +13,10 @@ from trading.kraken.ws_public import KrakenWSV2MarketData, StaleDataError as Kra
 from trading.processes.context import ProcessContext
 
 
+class StaleDataError(Exception):
+    pass
+
+
 def _cfg(cfg: Dict[str, Any], path: str, default: Any) -> Any:
     cur = cfg
     for part in path.split("."):
@@ -240,10 +244,10 @@ async def _run_live_async(ctx: ProcessContext) -> None:
                 if not got_any:
                     raise RuntimeError("market data stream ended without events")
                 raise RuntimeError("market data stream ended unexpectedly")
-            except (KrakenStaleDataError, BinanceStaleDataError) as exc:
+            except (StaleDataError, KrakenStaleDataError, BinanceStaleDataError) as exc:
                 stale_count += 1
-                # On market-data staleness we pause trading, but do not force emergency flatten.
-                _send_control(ctx, "PAUSE", "stale_market_data")
+                # STOP now only disables new trading; it no longer forces emergency exits.
+                _send_control(ctx, "STOP", "stale_market_data")
                 _send_control(ctx, "CANCEL_ALL", "stale_market_data")
                 _send_journal(ctx, "md_stale", {"reason": str(exc)})
                 reconnects += 1

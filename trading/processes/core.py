@@ -78,6 +78,17 @@ def _runtime_config_path(cfg: Dict[str, Any]) -> str:
     return str(_cfg(cfg, "runtime.config_path", "") or "").strip()
 
 
+def _explicit_journal_json_path(cfg: Dict[str, Any]) -> str:
+    journal_cfg = cfg.get("journal")
+    if not isinstance(journal_cfg, dict):
+        return ""
+    for key in ("json_path", "path"):
+        path = str(journal_cfg.get(key) or "").strip()
+        if path:
+            return path
+    return ""
+
+
 def _load_runtime_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     config_path = _runtime_config_path(cfg)
     if not config_path:
@@ -299,13 +310,9 @@ def _recover_flat_reentry_state_from_journal(
     bar_seconds: float,
     max_events: int = 200000,
 ) -> Dict[str, Any] | None:
-    path = _journal_json_path(cfg)
+    path = _explicit_journal_json_path(cfg)
     if not path or not os.path.exists(path) or max_events <= 0:
         return None
-    journal_cfg = cfg.get("journal")
-    journal_path_explicit = False
-    if isinstance(journal_cfg, dict):
-        journal_path_explicit = bool(str(journal_cfg.get("json_path") or "").strip())
 
     qty_eps = max(
         1e-12,
@@ -404,7 +411,7 @@ def _recover_flat_reentry_state_from_journal(
             }
         )
 
-    if not decision_rows and not (journal_path_explicit and external_flat_rows):
+    if not decision_rows and not external_flat_rows:
         return None
 
     tolerance_sec = max(5.0, float(bar_seconds or 60.0) * 2.0)
@@ -1049,10 +1056,17 @@ def run_core(ctx: ProcessContext) -> None:
             return _safe_bool(raw, default)
 
         stale_seconds_local = float(_cfg(config, "core.stale_seconds", 10.0))
+        md_cfg = config.get("md")
+        md_interval_raw = None
+        if isinstance(md_cfg, dict) and "interval_seconds" in md_cfg:
+            md_interval_raw = md_cfg.get("interval_seconds")
         md_interval_seconds_local = max(1.0, float(_cfg(config, "md.interval_seconds", 60.0)))
         # Core staleness uses market-event arrival. With bar aggregation, events only arrive
-        # once per bar, so the timeout must not be shorter than the bar cadence (+small slack).
-        stale_seconds_local = max(stale_seconds_local, md_interval_seconds_local + 30.0)
+        # once per bar, so the timeout must not be shorter than the configured bar cadence
+        # (+small slack). Keep explicit test/sim timeouts untouched when no cadence is set.
+        if md_interval_raw is not None:
+            md_interval_seconds_local = max(1.0, float(md_interval_raw))
+            stale_seconds_local = max(stale_seconds_local, md_interval_seconds_local + 30.0)
         max_orders_per_min_local = max(0, int(_cfg(config, "core.max_orders_per_min", 20)))
         rate_limit_pause_sec_local = float(_cfg(config, "core.rate_limit_pause_sec", 2.0))
         auto_resume_rate_limit_local = bool(_cfg(config, "core.auto_resume_rate_limit", False))

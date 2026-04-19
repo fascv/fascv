@@ -373,7 +373,8 @@ def classify_market_structure(
             active_leg = "fall"
 
     slope_flat_bps = max(3.0, vol_bps * 0.08)
-    slope_trend_bps = max(8.0, vol_bps * 0.22)
+    # Keep gentle but persistent trends classified as trends after interval normalization.
+    slope_trend_bps = max(5.0, vol_bps * 0.18)
     curve_turn_bps = max(3.0, vol_bps * 0.08)
     turning_up = slope_short >= slope_flat_bps and curvature >= curve_turn_bps
     turning_down = slope_short <= -slope_flat_bps and curvature <= -curve_turn_bps

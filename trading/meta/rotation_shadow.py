@@ -338,7 +338,8 @@ def build_recent_trade_examples(
     lookback_hours: float = 6.0,
     limit: int = 6,
 ) -> list[dict[str, Any]]:
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=max(0.1, float(lookback_hours)))
+    reference_now = _reference_now_from_rows(samples, ts_getter=lambda sample: getattr(sample, "exit_ts", None))
+    cutoff = reference_now - timedelta(hours=max(0.1, float(lookback_hours)))
     recent_items = [
         sample
         for sample in samples
@@ -496,7 +497,11 @@ def build_recent_no_trade_examples(
     lookback_hours: float = 6.0,
     limit: int = 4,
 ) -> list[dict[str, Any]]:
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=max(0.1, float(lookback_hours)))
+    reference_now = _reference_now_from_rows(
+        samples,
+        ts_getter=lambda sample: getattr(sample, "decision_ts", None),
+    )
+    cutoff = reference_now - timedelta(hours=max(0.1, float(lookback_hours)))
     recent_items = [
         sample
         for sample in samples
@@ -556,6 +561,17 @@ def _parse_ts(raw: object) -> datetime | None:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _reference_now_from_rows(rows: list[object], *, ts_getter) -> datetime:
+    latest: datetime | None = None
+    for row in rows:
+        ts = _parse_ts(ts_getter(row))
+        if ts is None:
+            continue
+        if latest is None or ts > latest:
+            latest = ts
+    return latest or datetime.now(timezone.utc)
 
 
 def _safe_float(value: object, default: float = 0.0) -> float:
@@ -2565,7 +2581,12 @@ def build_trade_summary(
     lookback_hours: float = 6.0,
     no_trade_samples: list[CounterfactualSample] | None = None,
 ) -> TradeSummary:
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=max(0.1, float(lookback_hours)))
+    combined_rows: list[object] = list(samples) + list(no_trade_samples or [])
+    reference_now = _reference_now_from_rows(
+        combined_rows,
+        ts_getter=lambda sample: getattr(sample, "exit_ts", getattr(sample, "decision_ts", None)),
+    )
+    cutoff = reference_now - timedelta(hours=max(0.1, float(lookback_hours)))
     recent = [sample for sample in samples if (_parse_ts(sample.exit_ts) or cutoff) >= cutoff]
     recent_no_trade = [
         sample

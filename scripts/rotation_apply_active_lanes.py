@@ -543,7 +543,7 @@ def _cleanup_lane_orphan_processes(symbol: str, preserve_root_pid: int = 0) -> l
     preserve = _collect_descendant_pids(preserve_root_pid)
     stale = sorted(pid for pid in _lane_process_pids(symbol) if pid not in preserve)
     for pid in stale:
-        _kill_pid(pid, graceful=False)
+        _kill_pid(pid)
     return stale
 
 
@@ -1198,6 +1198,32 @@ def _start_lane(symbol: str, *, force_recreate: bool = False) -> None:
     ]
     launch_error = ""
     launched = False
+    try:
+        subprocess.check_call(
+            run_command,
+            cwd=REPO_ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        launched = True
+    except subprocess.CalledProcessError as exc:
+        launch_error = str(exc)
+        if _unit_load_state(unit_service) == "loaded" and _lane_runtime_config_bootstrapped(symbol):
+            subprocess.run(
+                ["systemctl", "--user", "restart", unit_service],
+                cwd=REPO_ROOT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            if _wait_control_ready(control_port, timeout=25.0):
+                return
+
+    if launched:
+        if _wait_control_ready(control_port, timeout=25.0):
+            return
+        raise RuntimeError(f"{symbol} control did not become ready on {control_port}")
+
     for attempt in range(3):
         proc = subprocess.run(
             run_command,
@@ -1212,10 +1238,12 @@ def _start_lane(symbol: str, *, force_recreate: bool = False) -> None:
             break
 
         err_parts = []
-        if proc.stdout:
-            err_parts.append(proc.stdout.strip())
-        if proc.stderr:
-            err_parts.append(proc.stderr.strip())
+        stdout_text = str(proc.stdout).strip() if proc.stdout is not None else ""
+        stderr_text = str(proc.stderr).strip() if proc.stderr is not None else ""
+        if stdout_text:
+            err_parts.append(stdout_text)
+        if stderr_text:
+            err_parts.append(stderr_text)
         launch_error = " | ".join(part for part in err_parts if part) or f"systemd-run exit={proc.returncode}"
         err_norm = launch_error.lower()
         load_state = _unit_load_state(unit_service)

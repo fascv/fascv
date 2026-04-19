@@ -524,6 +524,17 @@ def _journal_json_path(cfg: Dict[str, Any]) -> str:
     return str(_cfg(cfg, "journal.json_path", _cfg(cfg, "journal.path", "logs/journal_events.jsonl")))
 
 
+def _explicit_journal_json_path(cfg: Dict[str, Any]) -> str:
+    journal_cfg = cfg.get("journal")
+    if not isinstance(journal_cfg, dict):
+        return ""
+    for key in ("json_path", "path"):
+        path = str(journal_cfg.get(key) or "").strip()
+        if path:
+            return path
+    return ""
+
+
 def _event_timestamp_from_row(item: Dict[str, Any]) -> Optional[str]:
     payload = item.get("payload")
     if isinstance(payload, dict):
@@ -573,7 +584,7 @@ def _latest_flat_sync_cutoff_from_tail(
 def _load_seen_client_ids_from_journal(cfg: Dict[str, Any], max_events: int = 20000) -> set[str]:
     if max_events <= 0:
         return set()
-    path = _journal_json_path(cfg)
+    path = _explicit_journal_json_path(cfg)
     if not path or not os.path.exists(path):
         return set()
     tail: deque[str] = deque(maxlen=max_events)
@@ -611,7 +622,7 @@ def _load_entry_reference_from_journal(
 ) -> Optional[Dict[str, Any]]:
     if expected_position_btc <= 0.0 or max_events <= 0:
         return None
-    path = _journal_json_path(cfg)
+    path = _explicit_journal_json_path(cfg)
     if not path or not os.path.exists(path):
         return None
 

@@ -1961,7 +1961,7 @@ def _build_coin_experience_priors_from_rows(
         if not isinstance(row, dict) or not bool(row.get("closed", True)):
             continue
         symbol = _coin_experience_base_symbol(row.get("symbol"))
-        if not symbol or symbol not in PORTS:
+        if not symbol:
             continue
         sell_ts = _parse_trade_timestamp(row.get("sellTime"))
         if sell_ts is None:

@@ -13,7 +13,7 @@ from btc_news_arrow.config import load_config
 from btc_news_arrow.learner import Learner
 from btc_news_arrow.llm_rater import LLMRater
 from btc_news_arrow.storage import Storage
-from btc_news_arrow.utils import parse_duration, utcnow
+from btc_news_arrow.utils import parse_datetime, parse_duration, utcnow
 
 
 @dataclass(slots=True)
@@ -32,6 +32,20 @@ class HybridSample:
     rule_value: float
     learn_value: float
     target_return: float
+
+
+def _reference_now_from_storage(storage: Storage):
+    try:
+        row = storage.conn.execute("SELECT MAX(timestamp_utc) AS ts FROM items").fetchone()
+    except Exception:
+        row = None
+    latest_ts = None
+    if row is not None:
+        try:
+            latest_ts = parse_datetime(row["ts"])
+        except Exception:
+            latest_ts = None
+    return latest_ts or utcnow()
 
 
 def optimize_llm_config(
@@ -89,7 +103,7 @@ def optimize_hybrid_weights(
     learner = Learner(cfg)
     storage = Storage(db_path)
     try:
-        now = utcnow()
+        now = _reference_now_from_storage(storage)
         since = now - timedelta(days=max(1, int(lookback_days)))
         samples = _build_hybrid_samples(storage, learner, windows, since)
         if len(samples) < max(20, int(min_samples)):
@@ -260,7 +274,7 @@ def evaluate_hybrid_model(
     learner = Learner(cfg)
     storage = Storage(db_path)
     try:
-        now = utcnow()
+        now = _reference_now_from_storage(storage)
         since = now - timedelta(days=max(1, int(lookback_days)))
         samples = _build_hybrid_samples(storage, learner, windows, since)
         if len(samples) < max(20, int(min_samples)):

@@ -270,6 +270,17 @@ def _cutoff_dt(lookback_hours: float) -> datetime:
     return datetime.now(timezone.utc) - timedelta(hours=max(0.1, float(lookback_hours)))
 
 
+def _reference_now_from_rows(rows: list[object], *, ts_getter) -> datetime:
+    latest: datetime | None = None
+    for row in rows:
+        ts = _parse_ts(ts_getter(row))
+        if ts is None:
+            continue
+        if latest is None or ts > latest:
+            latest = ts
+    return latest or datetime.now(timezone.utc)
+
+
 def _parse_evaluation_windows(
     *,
     primary_lookback_hours: float,
@@ -290,7 +301,8 @@ def _parse_evaluation_windows(
 
 
 def _recent_trade_samples(samples: list[TradeSample], lookback_hours: float) -> list[TradeSample]:
-    cutoff = _cutoff_dt(lookback_hours)
+    reference_now = _reference_now_from_rows(samples, ts_getter=lambda sample: getattr(sample, "exit_ts", None))
+    cutoff = reference_now - timedelta(hours=max(0.1, float(lookback_hours)))
     recent = [sample for sample in samples if (_parse_ts(sample.exit_ts) or cutoff) >= cutoff]
     recent.sort(key=lambda item: ((_parse_ts(item.entry_ts) or cutoff), (_parse_ts(item.exit_ts) or cutoff)))
     return recent
@@ -300,7 +312,11 @@ def _recent_counterfactual_samples(
     samples: list[CounterfactualSample],
     lookback_hours: float,
 ) -> list[CounterfactualSample]:
-    cutoff = _cutoff_dt(lookback_hours)
+    reference_now = _reference_now_from_rows(
+        samples,
+        ts_getter=lambda sample: getattr(sample, "decision_ts", None),
+    )
+    cutoff = reference_now - timedelta(hours=max(0.1, float(lookback_hours)))
     recent = [sample for sample in samples if (_parse_ts(sample.decision_ts) or cutoff) >= cutoff]
     recent.sort(key=lambda item: (_parse_ts(item.decision_ts) or cutoff))
     return recent

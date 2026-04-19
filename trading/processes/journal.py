@@ -247,14 +247,10 @@ class _JSONLWriter:
         # Rotate before writing if we're already over the threshold.
         self.maybe_rotate(now_dt)
 
-        # Keep the legacy "payload" field for compatibility, but also mirror it to
-        # "data" so downstream readers can use one consistent key.
+        # Keep the legacy JSONL shape stable for existing tail readers and tests.
         ts_json = json.dumps(ts_iso, ensure_ascii=False, separators=(",", ":"))
         et_json = json.dumps(event_type, ensure_ascii=False, separators=(",", ":"))
-        line = (
-            f'{{"ts":{ts_json},"event_type":{et_json},'
-            f'"payload":{payload_json},"data":{payload_json}}}'
-        )
+        line = f'{{"ts":{ts_json},"event_type":{et_json},"payload":{payload_json}}}'
         data = (line + "\n").encode("utf-8", errors="replace")
         _write_all(self.fd, data)
         self.size_bytes += len(data)
