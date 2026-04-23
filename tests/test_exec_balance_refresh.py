@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from queue import Queue
 
 import trading.processes.exec as execp
-from trading.ipc.events import OrderIntent
+from trading.ipc.events import ControlCommand, OrderIntent
 from trading.kraken.ws_auth import OwnTradeUpdate
 from trading.processes.context import ProcessContext
 
@@ -153,6 +153,48 @@ class _FakeBinanceRestStaleSellBalance:
             }
         return {
             "USDC": {"free": 20.0, "locked": 0.0, "total": 20.0},
+            "TEST": {"free": 10.0, "locked": 0.0, "total": 10.0},
+        }
+
+
+class _FakeBinanceRestCanceledBuySettlement:
+    last_instance = None
+
+    def __init__(self, *args, **kwargs):
+        self.balance_calls = 0
+        self.orders = []
+        self.cancel_all_calls = 0
+        type(self).last_instance = self
+
+    def cancel_all_orders_after(self, timeout: int):
+        return {"timeout": int(timeout), "supported": False}
+
+    def cancel_all(self):
+        self.cancel_all_calls += 1
+        return {"count": 1}
+
+    def open_orders(self):
+        return {"open": {}}
+
+    def query_orders(self, txid: str):
+        return {}
+
+    def min_notional(self, symbol: str):
+        return 5.0
+
+    def add_order(self, *args, **kwargs):
+        self.orders.append(kwargs)
+        return {"txid": ["BUY1"]}
+
+    def balance(self):
+        self.balance_calls += 1
+        if self.balance_calls <= 2:
+            return {
+                "USDC": {"free": 200.0, "locked": 0.0, "total": 200.0},
+                "TEST": {"free": 0.0, "locked": 0.0, "total": 0.0},
+            }
+        return {
+            "USDC": {"free": 190.0, "locked": 0.0, "total": 190.0},
             "TEST": {"free": 10.0, "locked": 0.0, "total": 10.0},
         }
 
@@ -539,6 +581,119 @@ class TestExecBalanceRefresh(unittest.TestCase):
             assert _FakeBinanceRestStaleSellBalance.last_instance is not None
             self.assertEqual(len(_FakeBinanceRestStaleSellBalance.last_instance.orders), 1)
             self.assertGreaterEqual(_FakeBinanceRestStaleSellBalance.last_instance.balance_calls, 2)
+        finally:
+            execp.BinanceRestClient = original_binance
+
+    def test_buy_cancel_requires_settlement_balance_check_before_reentry(self):
+        original_binance = execp.BinanceRestClient
+        execp.BinanceRestClient = _FakeBinanceRestCanceledBuySettlement
+        try:
+            ctx = ProcessContext(
+                mode="live",
+                config={
+                    "exec": {
+                        "exchange": "binance",
+                        "heartbeat_interval": 0.05,
+                        "telemetry_interval": 0.05,
+                        "reconcile_interval_sec": 60.0,
+                        "deadman_tick_sec": 60.0,
+                        "deadman_timeout_sec": 60,
+                        "rate_limit_per_sec": 100.0,
+                        "balance_refresh_sec": 0.0,
+                        "private_ws_enabled": False,
+                        "pair": "TEST/USDC",
+                    },
+                    "live": {
+                        "exchange": "binance",
+                        "api_key": "k",
+                        "api_secret": "s",
+                        "base_url": "https://api.binance.com",
+                        "symbol": "TEST/USDC",
+                    },
+                    "md": {"pair": "TEST/USDC"},
+                    "cost": {},
+                    "order": {"min_trade_btc": 1.0},
+                    "execution": {},
+                },
+                stop_event=threading.Event(),
+                q_market_core=Queue(),
+                q_market_exec=Queue(),
+                q_order_intent=Queue(),
+                q_exec_report=Queue(),
+                q_journal=Queue(),
+                q_control_core=Queue(),
+                q_control_exec=Queue(),
+                q_telemetry=Queue(),
+                q_heartbeat=Queue(),
+            )
+            t = threading.Thread(target=execp.run_exec, args=(ctx,), daemon=True)
+            t.start()
+
+            ctx.q_order_intent.put(
+                OrderIntent(
+                    ts=datetime.now(timezone.utc),
+                    side="buy",
+                    qty_btc=10.0,
+                    order_type="market",
+                    limit_price=None,
+                    post_only=False,
+                    client_id="buy_first",
+                    meta={"reference_price": 1.0},
+                )
+            )
+
+            deadline = time.time() + 3.0
+            open_seen = False
+            while time.time() < deadline and not open_seen:
+                while not ctx.q_exec_report.empty():
+                    evt = ctx.q_exec_report.get_nowait()
+                    if getattr(evt, "order_id", None) == "BUY1" and getattr(evt, "status", None) == "OPEN":
+                        open_seen = True
+                        break
+                time.sleep(0.05)
+
+            self.assertTrue(open_seen)
+
+            ctx.q_control_exec.put(
+                ControlCommand(ts=datetime.now(timezone.utc), action="CANCEL_ALL", reason="test_cancel")
+            )
+            time.sleep(0.2)
+
+            ctx.q_order_intent.put(
+                OrderIntent(
+                    ts=datetime.now(timezone.utc),
+                    side="buy",
+                    qty_btc=10.0,
+                    order_type="market",
+                    limit_price=None,
+                    post_only=False,
+                    client_id="buy_second",
+                    meta={"reference_price": 1.0},
+                )
+            )
+
+            deadline = time.time() + 3.0
+            settlement_check_seen = False
+            skipped_seen = False
+            while time.time() < deadline and not skipped_seen:
+                while not ctx.q_journal.empty():
+                    evt = ctx.q_journal.get_nowait()
+                    if evt.event_type == "exec_buy_settlement_check_requested":
+                        settlement_check_seen = True
+                    if evt.event_type == "exec_buy_skipped_existing_balance":
+                        skipped_seen = True
+                        break
+                time.sleep(0.05)
+
+            ctx.stop_event.set()
+            t.join(timeout=1.0)
+
+            self.assertTrue(settlement_check_seen)
+            self.assertTrue(skipped_seen)
+            self.assertIsNotNone(_FakeBinanceRestCanceledBuySettlement.last_instance)
+            assert _FakeBinanceRestCanceledBuySettlement.last_instance is not None
+            self.assertEqual(len(_FakeBinanceRestCanceledBuySettlement.last_instance.orders), 1)
+            self.assertGreaterEqual(_FakeBinanceRestCanceledBuySettlement.last_instance.balance_calls, 2)
         finally:
             execp.BinanceRestClient = original_binance
 

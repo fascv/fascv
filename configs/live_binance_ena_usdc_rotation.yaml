@@ -210,7 +210,7 @@ risk:
   peak_profit_retrace_arm_bps: 120.0
   peak_profit_retrace_pct: 50.0
   profit_roll_exit_enabled: true
-  profit_roll_arm_eur: 0.1
+  profit_roll_arm_eur: 0.0
   profit_roll_retrace_eur: 0.0
   profit_roll_retrace_pct: 50.0
   profit_roll_min_retrace_eur: 0.02
@@ -246,9 +246,9 @@ core:
   rate_limit_pause_sec: 2.0
   warmup:
     enabled: true
-    window_hours: 336.0
+    window_hours: 168.0
     min_bars: 720
-    max_bars: 20160
+    max_bars: 10080
     use_journal_db: true
     use_journal_json: true
     rest_backfill: true
@@ -256,12 +256,16 @@ core:
 policy:
   profit_corridor:
     enabled: true
-    window_bars: 20160
+    window_bars: 10080
     min_bars: 720
     max_entry_position_pct: 0.0
+    short_horizon_entry_guard_enabled: true
+    short_horizon_entry_window_bars: 1440
+    short_horizon_entry_min_bars: 720
+    short_horizon_no_buy_above_pct: 60.0
     fast_window_bars: 1440
     fast_min_bars: 240
-    fast_blend_weight: 0.35
+    fast_blend_weight: 0.0
     robust_range_enabled: true
     robust_low_pct: 2.0
     robust_high_pct: 98.0

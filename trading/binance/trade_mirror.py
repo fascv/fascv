@@ -298,7 +298,6 @@ def build_report(
                     "sellPrice": 0.0,
                     "buyGrossUsdc": round(remaining_qty * unit_cost, 8),
                     "sellGrossUsdc": 0.0,
-                    "proceedsUsdc": None,
                     "closed": False,
                 }
             )

@@ -6,11 +6,11 @@ data:
     depth: 100000.0
     imbalance: 0.0
 features:
-  return_window: 1
-  atr_window: 3
-  volume_z_window: 4
-  trend_window: 48
-  context_window: 4320
+  return_window: 2
+  atr_window: 6
+  volume_z_window: 8
+  trend_window: 96
+  context_window: 8640
 cost:
   maker_fee_bps: 10.0
   taker_fee_bps: 10.0
@@ -35,13 +35,13 @@ alpha:
   type: swing
   override_path: ''
   continuation:
-    lookback: 4
+    lookback: 8
     trend_min_bps: 1.0
     rebound_trigger_bps: 3.0
     rebound_confirm_bars: 0
     pullback_min_bps: 0.0
     pullback_max_bps: 75.0
-    recent_bias_lookback: 4
+    recent_bias_lookback: 8
     max_chase_bps: 38.0
     min_volume_z: -1.3
     max_structure_range_pos: 1.0
@@ -75,7 +75,7 @@ alpha:
     early_liftoff_min_slope_medium_bps: 0.95
     early_liftoff_min_drawdown_from_peak_bps: 18.0
     early_liftoff_min_trend_bps: -320.0
-    bar_seconds: 60
+    bar_seconds: 30
     reference_bar_seconds: 60
   breakout:
     lookback: 12
@@ -133,11 +133,11 @@ alpha:
 risk:
   max_exposure_eur: 6.0
   max_exposure_mode: equity
-  max_exposure_fraction: 0.0
+  max_exposure_fraction: 0.125
   vol_target_bps: 180.0
   daily_loss_limit_eur: 100000.0
   max_drawdown_pct: 100000.0
-  cooldown_bars: 4
+  cooldown_bars: 8
   allow_short: false
   use_vol_scaling: false
   use_gate_size_factor: false
@@ -160,7 +160,7 @@ risk:
   late_entry_block_min_return_bps: 4.0
   exit_edge_bps: -9999.0
   exit_bypass_gate_edge_bps: -9999.0
-  min_hold_bars: 3
+  min_hold_bars: 6
   reentry_min_move_bps: 60.0
   reentry_require_price_at_or_below_last_entry: true
   reentry_last_entry_tolerance_bps: 80.0
@@ -191,7 +191,7 @@ risk:
   trailing_stop_bps: 18.0
   trailing_stop_atr_mult: 0.0
   campaign_hold_enabled: true
-  campaign_hold_min_bars: 4
+  campaign_hold_min_bars: 8
   campaign_hold_min_profit_bps: 6.0
   campaign_hold_min_trend_bps: 45.0
   campaign_hold_max_range_pos: 1.0
@@ -199,30 +199,30 @@ risk:
   campaign_hold_min_recent_bias_bps: -60.0
   allow_reversal_exit_after_break_even: false
   time_break_even_floor_enabled: false
-  time_break_even_floor_bars: 28
+  time_break_even_floor_bars: 56
   red_candle_exit_enabled: false
   red_candle_window_bars: 1
   green_candle_take_exit_enabled: false
-  green_candle_take_min_bars: 2
+  green_candle_take_min_bars: 4
   green_candle_take_max_bars: 0
   green_candle_take_required_green_bars: 2
   green_candle_take_min_profit_bps: 4.0
   failed_start_exit_enabled: false
-  failed_start_min_bars: 10
-  failed_start_max_bars: 12
+  failed_start_min_bars: 20
+  failed_start_max_bars: 24
   failed_start_min_rebound_bps: 18.0
   failed_start_loss_bps: 72.0
   chop_break_even_reclaim_enabled: false
-  chop_break_even_reclaim_min_bars: 50
+  chop_break_even_reclaim_min_bars: 100
   chop_break_even_reclaim_min_drawdown_bps: 50.0
   chop_break_even_reclaim_max_edge_bps: 0.0
-  chop_break_even_reclaim_cross_window_bars: 30
+  chop_break_even_reclaim_cross_window_bars: 60
   chop_break_even_reclaim_min_crosses: 3
   peak_profit_retrace_enabled: false
   peak_profit_retrace_arm_bps: 120.0
   peak_profit_retrace_pct: 50.0
   profit_roll_exit_enabled: true
-  profit_roll_arm_eur: 0.1
+  profit_roll_arm_eur: 0.0
   profit_roll_retrace_eur: 0.0
   profit_roll_retrace_pct: 50.0
   profit_roll_min_retrace_eur: 0.02
@@ -235,7 +235,7 @@ order:
   min_trade_btc: 6.0
   slice_count: 1
   cycle_trade_mode: equity
-  cycle_trade_fraction: 0.0
+  cycle_trade_fraction: 0.125
   cycle_trade_eur: 6.0
 execution:
   latency_bars: 0
@@ -250,7 +250,7 @@ md:
   stale_trade_seconds: 180
   reconnect_min: 1
   reconnect_max: 30
-  interval_seconds: 60
+  interval_seconds: 30
 core:
   trading_enabled: true
   stale_seconds: 180
@@ -259,8 +259,8 @@ core:
   warmup:
     enabled: true
     window_hours: 168.0
-    min_bars: 720
-    max_bars: 10080
+    min_bars: 1440
+    max_bars: 20160
     use_journal_db: true
     use_journal_json: true
     rest_backfill: true
@@ -268,15 +268,15 @@ core:
 policy:
   profit_corridor:
     enabled: true
-    window_bars: 10080
-    min_bars: 720
+    window_bars: 20160
+    min_bars: 1440
     max_entry_position_pct: 0.0
     short_horizon_entry_guard_enabled: true
-    short_horizon_entry_window_bars: 1440
-    short_horizon_entry_min_bars: 720
-    short_horizon_no_buy_above_pct: 55.0
-    fast_window_bars: 1440
-    fast_min_bars: 240
+    short_horizon_entry_window_bars: 2880
+    short_horizon_entry_min_bars: 1440
+    short_horizon_no_buy_above_pct: 60.0
+    fast_window_bars: 2880
+    fast_min_bars: 480
     fast_blend_weight: 0.0
     robust_range_enabled: true
     robust_low_pct: 2.0

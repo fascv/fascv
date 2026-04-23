@@ -98,7 +98,7 @@
 
     @media (min-width: 760px) {
       .control-row {
-        grid-template-columns: 2fr 1fr 1fr;
+        grid-template-columns: 1.8fr 1fr 1fr 1fr;
         align-items: end;
       }
     }
@@ -736,7 +736,7 @@
       <div class="coin">B</div>
       <div>
         <div style="font-size:24px;font-weight:700;">Trade Live Dashboard</div>
-        <div class="small">Live-Rotation, Strategien, offene Coins, Entry/Exit-Werte und Tagesreport</div>
+        <div class="small">Live-Rotation, Strategien, offene Coins, Entry/Exit-Werte und Trade-Report</div>
       </div>
     </div>
 
@@ -748,8 +748,12 @@
             <input id="token" type="password" placeholder="RELAY_TOKEN">
           </div>
           <div>
-            <label for="reportDate">Tag</label>
-            <input id="reportDate" type="date">
+            <label for="reportFromDate">Von</label>
+            <input id="reportFromDate" type="date">
+          </div>
+          <div>
+            <label for="reportToDate">Bis</label>
+            <input id="reportToDate" type="date">
           </div>
           <div>
             <label for="reportSymbol">Symbol (optional)</label>
@@ -757,7 +761,7 @@
           </div>
         </div>
         <div class="control-actions">
-          <button id="loadReportBtn" type="button">Tagesauswertung laden</button>
+          <button id="loadReportBtn" type="button">Auswertung laden</button>
         </div>
         <div id="status" class="status"></div>
       </section>
@@ -826,7 +830,7 @@
           </table>
         </div>
         <div id="liveCandidateBlock" class="live-candidate-block" style="display:none;">
-          <details class="live-candidate-details" open>
+          <details class="live-candidate-details">
             <summary class="live-candidate-summary">
               <span class="live-candidate-summary-main">
                 <span class="live-candidate-summary-title">Kandidatenliste</span>
@@ -976,6 +980,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20260419b"></script>
+  <script src="/static/app.js?v=20260422c"></script>
 </body>
 </html>

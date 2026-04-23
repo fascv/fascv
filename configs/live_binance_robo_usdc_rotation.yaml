@@ -222,7 +222,7 @@ risk:
   peak_profit_retrace_arm_bps: 120.0
   peak_profit_retrace_pct: 50.0
   profit_roll_exit_enabled: true
-  profit_roll_arm_eur: 0.1
+  profit_roll_arm_eur: 0.0
   profit_roll_retrace_eur: 0.0
   profit_roll_retrace_pct: 50.0
   profit_roll_min_retrace_eur: 0.02

@@ -91,6 +91,7 @@ IPC_MAX_HEARTBEAT_QUEUE_SIZE = _env_int(
     minimum=8,
 )
 ROTATION_UNIT_RE = re.compile(r"codex-rotation-([a-z0-9]+)\.service")
+LANE_UNIT_TIMEOUT_SEC = 20.0
 
 
 def _lane_base_config_path(symbol: str) -> Path:
@@ -253,6 +254,8 @@ def _render_lane_runtime_config(
     manual_entry_exit_only: bool = False,
     fixed_notional_eur: float | None = None,
     exec_enabled: bool = True,
+    md_interval_seconds: int | None = None,
+    exec_reconcile_interval_sec: float | None = None,
 ) -> tuple[str, str]:
     base_config_path = _ensure_lane_base_config(symbol)
     runtime_config_path = _lane_runtime_config_path(symbol)
@@ -273,6 +276,16 @@ def _render_lane_runtime_config(
     exec_cfg = runtime_cfg.setdefault("exec", {})
     if isinstance(exec_cfg, dict):
         exec_cfg["enabled"] = bool(exec_enabled)
+        if exec_reconcile_interval_sec is not None:
+            exec_cfg["reconcile_interval_sec"] = float(exec_reconcile_interval_sec)
+    md_cfg = runtime_cfg.setdefault("md", {})
+    if isinstance(md_cfg, dict) and md_interval_seconds is not None:
+        md_cfg["interval_seconds"] = int(md_interval_seconds)
+    alpha_cfg = runtime_cfg.get("alpha")
+    if isinstance(alpha_cfg, dict) and md_interval_seconds is not None:
+        continuation_cfg = alpha_cfg.get("continuation")
+        if isinstance(continuation_cfg, dict):
+            continuation_cfg["bar_seconds"] = int(md_interval_seconds)
     runtime = runtime_cfg.setdefault("runtime", {})
     runtime["base_config_path"] = str(base_config_path)
     runtime["generated_config_path"] = str(runtime_config_path)
@@ -321,6 +334,8 @@ def _write_lane_runtime_config(
     manual_entry_exit_only: bool = False,
     fixed_notional_eur: float | None = None,
     exec_enabled: bool = True,
+    md_interval_seconds: int | None = None,
+    exec_reconcile_interval_sec: float | None = None,
 ) -> tuple[str, bool]:
     runtime_config_path = _lane_runtime_config_path(symbol)
     alpha_type, rendered = _render_lane_runtime_config(
@@ -330,6 +345,8 @@ def _write_lane_runtime_config(
         manual_entry_exit_only=manual_entry_exit_only,
         fixed_notional_eur=fixed_notional_eur,
         exec_enabled=exec_enabled,
+        md_interval_seconds=md_interval_seconds,
+        exec_reconcile_interval_sec=exec_reconcile_interval_sec,
     )
     previous = ""
     try:
@@ -1074,7 +1091,7 @@ def _unit_load_state(unit: str) -> str:
     return _unit_properties(unit, "LoadState").get("LoadState", "")
 
 
-def _wait_unit_released(unit: str, timeout: float = 8.0) -> bool:
+def _wait_unit_released(unit: str, timeout: float = LANE_UNIT_TIMEOUT_SEC) -> bool:
     deadline = time.time() + max(0.1, timeout)
     while time.time() < deadline:
         values = _unit_properties(unit, "LoadState", "ActiveState", "SubState")
@@ -1151,7 +1168,7 @@ def _stop_lane(symbol: str) -> None:
         stderr=subprocess.DEVNULL,
         check=False,
     )
-    deadline = time.time() + 8.0
+    deadline = time.time() + LANE_UNIT_TIMEOUT_SEC
     while time.time() < deadline:
         active_state, sub_state = _unit_state(unit)
         if active_state in {"inactive", "failed", ""}:
@@ -1205,7 +1222,7 @@ def _stop_unmanaged_lane(symbol: str) -> None:
         stderr=subprocess.DEVNULL,
         check=False,
     )
-    deadline = time.time() + 8.0
+    deadline = time.time() + LANE_UNIT_TIMEOUT_SEC
     while time.time() < deadline:
         active_state, sub_state = _unit_state(unit)
         if active_state in {"inactive", "failed", ""}:
@@ -1272,7 +1289,7 @@ def _start_lane(symbol: str, *, force_recreate: bool = False) -> None:
         stderr=subprocess.DEVNULL,
         check=False,
     )
-    _wait_unit_released(unit_service, timeout=8.0)
+    _wait_unit_released(unit_service, timeout=LANE_UNIT_TIMEOUT_SEC)
 
     run_cmd = "./scripts/live_guard.sh >> \"$GUARD_LOG\" 2>&1"
     run_command = [
@@ -1282,7 +1299,8 @@ def _start_lane(symbol: str, *, force_recreate: bool = False) -> None:
         "--unit",
         unit,
         f"--property=WorkingDirectory={REPO_ROOT}",
-        "--property=TimeoutStopSec=8s",
+        f"--property=TimeoutStopSec={int(LANE_UNIT_TIMEOUT_SEC)}s",
+        "--property=KillMode=mixed",
         "--setenv=MODE=live",
         f"--setenv=CONFIG={runtime_config_path}",
         "--setenv=START_IMPACT_CONSOLE=0",
@@ -1395,10 +1413,10 @@ def _start_lane(symbol: str, *, force_recreate: bool = False) -> None:
                 stderr=subprocess.DEVNULL,
                 check=False,
             )
-            _wait_unit_released(unit_service, timeout=6.0 + (attempt * 2.0))
+            _wait_unit_released(unit_service, timeout=LANE_UNIT_TIMEOUT_SEC + (attempt * 2.0))
             continue
 
-        if not _wait_unit_released(unit_service, timeout=4.0):
+        if not _wait_unit_released(unit_service, timeout=max(4.0, LANE_UNIT_TIMEOUT_SEC / 2.0)):
             break
 
     if not launched:
@@ -1487,6 +1505,18 @@ def main() -> None:
     if not ACTIVE_FILE.exists():
         raise SystemExit("missing configs/rotation_active_lanes.json")
     state = json.loads(ACTIVE_FILE.read_text(encoding="utf-8"))
+    profile_values = state.get("profile_values") if isinstance(state.get("profile_values"), dict) else {}
+    try:
+        state_md_interval_seconds = max(1, int(float(profile_values.get("md_interval_seconds", 60) or 60)))
+    except Exception:
+        state_md_interval_seconds = 60
+    try:
+        state_exec_reconcile_interval_sec = max(
+            1.0,
+            float(profile_values.get("exec_reconcile_interval_sec", 5.0) or 5.0),
+        )
+    except Exception:
+        state_exec_reconcile_interval_sec = 5.0
     selected = [str(x).upper() for x in state.get("selected", []) if str(x).upper() in LANES]
     watch_symbols = [str(x).upper() for x in state.get("watch_symbols", selected) if str(x).upper() in LANES]
     if not watch_symbols:
@@ -1577,6 +1607,8 @@ def main() -> None:
             manual_entry_exit_only=manual_entry_exit_only,
             fixed_notional_eur=fixed_notional,
             exec_enabled=exec_enabled,
+            md_interval_seconds=state_md_interval_seconds,
+            exec_reconcile_interval_sec=state_exec_reconcile_interval_sec,
         )
         runtime_config_path = _lane_runtime_config_path(symbol)
         try:
@@ -1616,6 +1648,8 @@ def main() -> None:
             manual_entry_exit_only=manual_entry_exit_only,
             fixed_notional_eur=fixed_notional,
             exec_enabled=exec_enabled,
+            md_interval_seconds=state_md_interval_seconds,
+            exec_reconcile_interval_sec=state_exec_reconcile_interval_sec,
         )
         if symbol in selected_set and fixed_notional > 0.0 and changed:
             runtime_budget_overrides.append({"symbol": symbol, "notional_eur": fixed_notional})

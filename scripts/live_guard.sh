@@ -22,22 +22,57 @@ echo "$$" > "$PID_FILE"
 stop=0
 child_pid=""
 
+child_pids() {
+  local parent="$1"
+  ps -o pid= --ppid "$parent" 2>/dev/null | awk '{print $1}'
+}
+
+collect_descendants_postorder() {
+  local parent="$1"
+  local child=""
+  while read -r child; do
+    [[ -z "$child" ]] && continue
+    collect_descendants_postorder "$child"
+    printf '%s\n' "$child"
+  done < <(child_pids "$parent")
+}
+
+kill_pid_tree() {
+  local root_pid="${1:-0}"
+  [[ "$root_pid" =~ ^[0-9]+$ ]] || return 0
+  (( root_pid > 0 )) || return 0
+
+  local targets=()
+  local pid=""
+  while read -r pid; do
+    [[ -n "$pid" ]] && targets+=("$pid")
+  done < <(collect_descendants_postorder "$root_pid")
+  targets+=("$root_pid")
+
+  local sig=""
+  local alive=0
+  for sig in TERM KILL; do
+    for pid in "${targets[@]}"; do
+      kill "-$sig" "$pid" >/dev/null 2>&1 || true
+    done
+    for _ in {1..15}; do
+      alive=0
+      for pid in "${targets[@]}"; do
+        if kill -0 "$pid" >/dev/null 2>&1; then
+          alive=1
+          break
+        fi
+      done
+      (( alive == 0 )) && return 0
+      sleep 0.2
+    done
+  done
+}
+
 stop_child() {
   if [[ -n "${child_pid}" ]] && kill -0 "$child_pid" 2>/dev/null; then
-    kill -INT "$child_pid" 2>/dev/null || true
-    for _ in {1..20}; do
-      if ! kill -0 "$child_pid" 2>/dev/null; then
-        break
-      fi
-      sleep 0.5
-    done
-    if kill -0 "$child_pid" 2>/dev/null; then
-      kill -TERM "$child_pid" 2>/dev/null || true
-      sleep 1
-    fi
-    if kill -0 "$child_pid" 2>/dev/null; then
-      kill -KILL "$child_pid" 2>/dev/null || true
-    fi
+    kill_pid_tree "$child_pid"
+    wait "$child_pid" >/dev/null 2>&1 || true
   fi
   rm -f "$CHILD_PID_FILE"
   child_pid=""

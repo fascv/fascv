@@ -1522,8 +1522,14 @@ def run_core(ctx: ProcessContext) -> None:
     # core can emit multiple entries before fills arrive and the simulation can overspend cash.
     inflight_order_ids: set[str] = set()
     inflight_exit_order_ids: set[str] = set()
+    entry_order_ids: set[str] = set()
     order_aliases_by_id: dict[str, set[str]] = {}
     terminal_order_ids: set[str] = set()
+    entry_settlement_grace_sec = max(
+        5.0,
+        float(_cfg(cfg, "exec.entry_settlement_grace_sec", 45.0) or 45.0),
+    )
+    entry_settlement_pending_until: float | None = None
     last_heartbeat = 0.0
     last_telemetry = 0.0
     hb_seq = 0
@@ -2150,7 +2156,7 @@ def run_core(ctx: ProcessContext) -> None:
         - If any disable action (PAUSE/STOP) is seen in this tick, trading ends disabled.
         - START/RESUME is applied only if no disable happened in this tick.
         """
-        nonlocal resume_after, state_manager, risk_manager, order_times, order_seq, current_starting_cash_eur, ignore_reports_before_ts, budget_cutoff_ts, position_reference_pending
+        nonlocal resume_after, state_manager, risk_manager, order_times, order_seq, current_starting_cash_eur, ignore_reports_before_ts, budget_cutoff_ts, position_reference_pending, entry_settlement_pending_until
         saw_disable = False
         disable_reason: str | None = None
         saw_rate_limit_pause = False
@@ -2236,6 +2242,8 @@ def run_core(ctx: ProcessContext) -> None:
                     order_seq = 0
                     inflight_order_ids.clear()
                     inflight_exit_order_ids.clear()
+                    entry_order_ids.clear()
+                    entry_settlement_pending_until = None
                     exit_observer.reset()
                     ignore_reports_before_ts = cmd.ts
                     budget_cutoff_ts = cmd.ts
@@ -2440,6 +2448,8 @@ def run_core(ctx: ProcessContext) -> None:
                     order_seq = 0
                     inflight_order_ids.clear()
                     inflight_exit_order_ids.clear()
+                    entry_order_ids.clear()
+                    entry_settlement_pending_until = None
                     ignore_reports_before_ts = cmd.ts
                     budget_cutoff_ts = cmd.ts
 
@@ -2523,6 +2533,7 @@ def run_core(ctx: ProcessContext) -> None:
                         "reset": reset,
                     },
                 )
+                entry_settlement_pending_until = None
                 if recovered_reentry_state:
                     _send_journal(
                         ctx,
@@ -2667,6 +2678,9 @@ def run_core(ctx: ProcessContext) -> None:
                     for inflight_id in fill_ids:
                         inflight_order_ids.discard(inflight_id)
                         inflight_exit_order_ids.discard(inflight_id)
+                        entry_order_ids.discard(inflight_id)
+                    if str(getattr(msg, "side", "") or "").strip().lower() == "buy":
+                        entry_settlement_pending_until = None
                     observer_before_pos = copy.copy(state_manager.position)
                     state_manager.apply_fill(msg)
                     if exit_observer_enabled:
@@ -2705,13 +2719,20 @@ def run_core(ctx: ProcessContext) -> None:
                         if oid and aliases:
                             known_aliases = order_aliases_by_id.setdefault(oid, set())
                             known_aliases.update(alias for alias in aliases if alias and alias != oid)
+                        report_ids: set[str] = set()
+                        if oid:
+                            report_ids.add(oid)
+                        report_ids.update(alias for alias in aliases if alias)
+                        is_entry_report = any(order_id in entry_order_ids for order_id in report_ids)
                         if oid:
                             if st in {"FILLED", "CANCELED", "REJECTED"}:
                                 inflight_order_ids.discard(oid)
                                 inflight_exit_order_ids.discard(oid)
+                                entry_order_ids.discard(oid)
                                 for alias in aliases:
                                     inflight_order_ids.discard(alias)
                                     inflight_exit_order_ids.discard(alias)
+                                    entry_order_ids.discard(alias)
                                     terminal_order_ids.add(alias)
                                 terminal_order_ids.add(oid)
                                 order_aliases_by_id.pop(oid, None)
@@ -2721,11 +2742,28 @@ def run_core(ctx: ProcessContext) -> None:
                                     inflight_order_ids.add(oid)
                                     if any(alias in inflight_exit_order_ids for alias in aliases):
                                         inflight_exit_order_ids.add(oid)
+                                    if oid in entry_order_ids or any(alias in entry_order_ids for alias in aliases):
+                                        entry_order_ids.add(oid)
                                 for alias in aliases:
                                     if alias in terminal_order_ids:
                                         continue
                                     if should_add:
                                         inflight_order_ids.add(alias)
+                                        if oid in entry_order_ids or alias in entry_order_ids:
+                                            entry_order_ids.add(alias)
+                        if is_entry_report and st in {"CANCELED", "REJECTED"}:
+                            entry_settlement_pending_until = time.time() + entry_settlement_grace_sec
+                            _send_journal(
+                                ctx,
+                                "core_entry_settlement_pending",
+                                {
+                                    "order_ids": sorted(report_ids),
+                                    "status": st,
+                                    "grace_sec": float(entry_settlement_grace_sec),
+                                },
+                            )
+                        elif is_entry_report and st == "FILLED":
+                            entry_settlement_pending_until = None
                     except Exception:
                         pass
                     _send_journal(
@@ -3453,8 +3491,33 @@ def run_core(ctx: ProcessContext) -> None:
                                 getattr(active_order_builder.config, "cycle_trade_eur", 0.0)
                                 and active_order_builder.config.cycle_trade_eur > 0
                             )
+                            if (
+                                entry_settlement_pending_until is not None
+                                and time.time() >= entry_settlement_pending_until
+                            ):
+                                entry_settlement_pending_until = None
                             if cycle_mode and inflight_order_ids:
                                 orders = []
+                            elif (
+                                entry_settlement_pending_until is not None
+                                and time.time() < entry_settlement_pending_until
+                                and not reducing_exposure
+                                and not flattening
+                            ):
+                                orders = []
+                                _send_journal(
+                                    ctx,
+                                    "core_entry_settlement_blocked",
+                                    {
+                                        "ts": event.ts.isoformat(),
+                                        "pending_until_unix": float(entry_settlement_pending_until),
+                                        "remaining_sec": max(
+                                            0.0,
+                                            float(entry_settlement_pending_until) - time.time(),
+                                        ),
+                                        "risk_reason": risk.reason,
+                                    },
+                                )
                             elif (reducing_exposure or flattening) and inflight_exit_order_ids:
                                 orders = []
                             else:
@@ -3501,6 +3564,8 @@ def run_core(ctx: ProcessContext) -> None:
                                     intents.append(intent)
                                     order_times.append(now_rl)
                                     inflight_order_ids.add(intent.client_id)
+                                    if str(order.side or "").strip().lower() == "buy":
+                                        entry_order_ids.add(intent.client_id)
                                     if reducing_exposure or flattening:
                                         inflight_exit_order_ids.add(intent.client_id)
 

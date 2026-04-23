@@ -98,6 +98,30 @@ class TestRelayLiveCampaign(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Lane startet gerade neu oder antwortet noch nicht."):
                 relay_server.fetch_local_json("http://127.0.0.1:8010/status", timeout=0.1)
 
+    def test_compute_live_exit_tracker_uses_percent_sockel_when_abs_sockel_disabled(self) -> None:
+        tracker = relay_server.compute_live_exit_tracker(
+            {
+                "positionQty": 10.0,
+                "exitPrice": 1.006,
+                "entryPrice": 1.0,
+                "corridorLowPrice": 0.9,
+                "corridorHighPrice": 1.1,
+                "profitRollExitEnabled": True,
+                "profitRollArmUsdc": 0.0,
+                "profitRollRetraceUsdc": 0.0,
+                "profitRollRetracePct": 50.0,
+                "corridorStagedProfitTargetBasePct": 0.6,
+                "corridorStagedNoBuyAbovePct": 60.0,
+                "corridorStagedExitStepPct": 10.0,
+                "corridorStagedHysteresisPct": 0.75,
+            }
+        )
+
+        self.assertEqual(tracker["exitMode"], "profit_roll_pct")
+        self.assertIsNone(tracker["exitArmUsdc"])
+        self.assertAlmostEqual(float(tracker["exitArmPct"]), 0.6, places=9)
+        self.assertTrue(bool(tracker["exitRollArmed"]))
+
     def test_reconstruct_live_campaign_metrics_skips_account_sync_delta_fills(self) -> None:
         rows = [
             {

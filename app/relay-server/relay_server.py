@@ -1068,7 +1068,9 @@ def compute_live_exit_tracker(row: dict[str, Any]) -> dict[str, Any]:
             "exitTargetPct": None,
             "exitTargetPrice": None,
             "exitArmUsdc": None,
+            "exitArmPct": None,
             "exitRetraceUsdc": None,
+            "exitRetracePct": None,
             "exitMode": "unavailable",
         }
 
@@ -1098,20 +1100,27 @@ def compute_live_exit_tracker(row: dict[str, Any]) -> dict[str, Any]:
     abs_roll_enabled = to_bool(row.get("profitRollExitEnabled"), False)
     abs_roll_arm_usdc = max(0.0, to_float(row.get("profitRollArmUsdc"), 0.0))
     abs_roll_retrace_usdc = max(0.0, to_float(row.get("profitRollRetraceUsdc"), 0.0))
-    use_abs_roll = abs_roll_enabled and abs_roll_arm_usdc > 0.0 and abs_roll_retrace_usdc > 0.0
-    if use_abs_roll:
+    abs_roll_retrace_pct = max(0.0, to_float(row.get("profitRollRetracePct"), 50.0))
+    target_base_pct = max(0.0, to_float(row.get("corridorStagedProfitTargetBasePct"), 0.0))
+    use_roll = abs_roll_enabled and (abs_roll_arm_usdc > 0.0 or target_base_pct > 0.0)
+    if use_roll:
         open_pnl_usdc = (mark - entry) * qty
-        target_price = entry + (abs_roll_arm_usdc / qty) if qty > EPS else 0.0
-        entry_notional = max(EPS, entry * qty)
-        target_pct = (abs_roll_arm_usdc / entry_notional) * 100.0
-        price_target_armed = open_pnl_usdc >= abs_roll_arm_usdc
-        roll_armed = (
-            roll_state_explicit
-            if roll_state_explicit is not None
-            else price_target_armed
-        )
-        need_usdc = max(0.0, abs_roll_arm_usdc - open_pnl_usdc)
-        bonus_usdc = max(0.0, open_pnl_usdc - abs_roll_arm_usdc) if roll_armed else 0.0
+        if abs_roll_arm_usdc > 0.0:
+            arm_usdc = abs_roll_arm_usdc
+            target_pct = (arm_usdc / max(EPS, entry * qty)) * 100.0
+            target_price = entry + (arm_usdc / qty) if qty > EPS else 0.0
+            exit_arm_usdc = float(arm_usdc)
+            exit_arm_pct = None
+        else:
+            target_pct = target_base_pct
+            target_price = entry * (1.0 + (target_pct / 100.0))
+            arm_usdc = max(0.0, (target_price - entry) * qty)
+            exit_arm_usdc = None
+            exit_arm_pct = float(target_pct)
+        price_target_armed = open_pnl_usdc >= arm_usdc
+        roll_armed = bool(roll_state_explicit) or price_target_armed
+        need_usdc = max(0.0, arm_usdc - open_pnl_usdc)
+        bonus_usdc = max(0.0, open_pnl_usdc - arm_usdc) if roll_armed else 0.0
         return {
             "exitNeedUsdc": float(need_usdc),
             "exitBonusUsdc": float(bonus_usdc),
@@ -1119,14 +1128,15 @@ def compute_live_exit_tracker(row: dict[str, Any]) -> dict[str, Any]:
             "exitEntryStagePct": float(entry_stage),
             "exitTargetPct": float(target_pct),
             "exitTargetPrice": (None if target_price <= 0.0 else float(target_price)),
-            "exitArmUsdc": float(abs_roll_arm_usdc),
-            "exitRetraceUsdc": float(abs_roll_retrace_usdc),
-            "exitMode": "profit_roll_abs",
+            "exitArmUsdc": exit_arm_usdc,
+            "exitArmPct": exit_arm_pct,
+            "exitRetraceUsdc": (float(abs_roll_retrace_usdc) if abs_roll_retrace_usdc > 0.0 else None),
+            "exitRetracePct": (None if abs_roll_retrace_usdc > 0.0 else float(abs_roll_retrace_pct)),
+            "exitMode": ("profit_roll_abs" if abs_roll_retrace_usdc > 0.0 else "profit_roll_pct"),
         }
 
     profit_target_enabled = bool(row.get("corridorStagedProfitTargetEnabled"))
     if profit_target_enabled:
-        target_base_pct = max(0.0, to_float(row.get("corridorStagedProfitTargetBasePct"), 0.0))
         target_min_pct = max(0.0, to_float(row.get("corridorStagedProfitTargetMinPct"), 0.0))
         target_max_pct = max(target_min_pct, to_float(row.get("corridorStagedProfitTargetMaxPct"), 100.0))
         mult_10 = max(0.1, to_float(row.get("corridorStagedProfitTargetMult10"), 1.25))
@@ -1189,7 +1199,9 @@ def compute_live_exit_tracker(row: dict[str, Any]) -> dict[str, Any]:
         "exitTargetPct": float(target_pct),
         "exitTargetPrice": (None if target_price <= 0.0 else float(target_price)),
         "exitArmUsdc": None,
+        "exitArmPct": None,
         "exitRetraceUsdc": None,
+        "exitRetracePct": None,
         "exitMode": str(exit_mode),
     }
 
@@ -2723,6 +2735,7 @@ def _runtime_config_metadata(symbol: str) -> dict[str, Any]:
         "profitRollExitEnabled": to_bool(risk.get("profit_roll_exit_enabled"), False),
         "profitRollArmUsdc": max(0.0, to_float(risk.get("profit_roll_arm_eur"), 0.0)),
         "profitRollRetraceUsdc": max(0.0, to_float(risk.get("profit_roll_retrace_eur"), 0.0)),
+        "profitRollRetracePct": max(0.0, to_float(risk.get("profit_roll_retrace_pct"), 50.0)),
         "manualEntryExitOnly": to_bool(risk.get("manual_entry_exit_only"), False),
     }
 
@@ -2736,12 +2749,13 @@ def _runtime_strategy_metadata(symbol: str) -> tuple[str, str]:
     return str(metadata.get("strategy", "")), str(metadata.get("alphaType", ""))
 
 
-def _runtime_profit_roll_metadata(symbol: str) -> tuple[bool, float, float]:
+def _runtime_profit_roll_metadata(symbol: str) -> tuple[bool, float, float, float]:
     metadata = _runtime_config_metadata(symbol)
     return (
         bool(metadata.get("profitRollExitEnabled", False)),
         float(metadata.get("profitRollArmUsdc", 0.0)),
         float(metadata.get("profitRollRetraceUsdc", 0.0)),
+        float(metadata.get("profitRollRetracePct", 50.0)),
     )
 
 
@@ -3096,6 +3110,7 @@ def load_rotation_live() -> dict[str, Any]:
                 "profitRollExitEnabled": bool(runtime_meta.get("profitRollExitEnabled", False)),
                 "profitRollArmUsdc": float(runtime_meta.get("profitRollArmUsdc", 0.0)),
                 "profitRollRetraceUsdc": float(runtime_meta.get("profitRollRetraceUsdc", 0.0)),
+                "profitRollRetracePct": float(runtime_meta.get("profitRollRetracePct", 50.0)),
                 "manualEntryExitOnly": bool(runtime_meta.get("manualEntryExitOnly", False)),
                 "eligible": bool(eligible),
                 "score": float(score),
@@ -3179,6 +3194,10 @@ def load_rotation_live() -> dict[str, Any]:
                 "exitEntryStagePct": None,
                 "exitTargetPct": None,
                 "exitTargetPrice": None,
+                "exitArmUsdc": None,
+                "exitArmPct": None,
+                "exitRetraceUsdc": None,
+                "exitRetracePct": None,
                 "exitMode": "unavailable",
                 "openOrdersCount": 0,
                 "freshnessSec": 0.0,
@@ -3209,13 +3228,19 @@ def load_rotation_live() -> dict[str, Any]:
             selector_long_pos_pct = to_float(meta.get("corridor_long_pos_pct"), float("nan"))
             selected_since_iso = selected_since.get(symbol, "")
             runtime_strategy, runtime_alpha_type = _runtime_strategy_metadata(symbol)
-            profit_roll_enabled, profit_roll_arm_usdc, profit_roll_retrace_usdc = _runtime_profit_roll_metadata(symbol)
+            (
+                profit_roll_enabled,
+                profit_roll_arm_usdc,
+                profit_roll_retrace_usdc,
+                profit_roll_retrace_pct,
+            ) = _runtime_profit_roll_metadata(symbol)
             runtime_meta = {
                 "strategy": runtime_strategy,
                 "alphaType": runtime_alpha_type,
                 "profitRollExitEnabled": profit_roll_enabled,
                 "profitRollArmUsdc": profit_roll_arm_usdc,
                 "profitRollRetraceUsdc": profit_roll_retrace_usdc,
+                "profitRollRetracePct": profit_roll_retrace_pct,
                 "manualEntryExitOnly": _runtime_manual_entry_exit_only(symbol),
             }
 
@@ -3457,6 +3482,20 @@ def load_rotation_live() -> dict[str, Any]:
 
         rows.sort(key=sort_key)
 
+        latest_row_update_dt: datetime | None = None
+        for row in rows:
+            updated_dt = parse_iso_datetime(row.get("updatedAt"))
+            if updated_dt is None:
+                continue
+            if latest_row_update_dt is None or updated_dt > latest_row_update_dt:
+                latest_row_update_dt = updated_dt
+
+        live_generated_at = (
+            latest_row_update_dt.isoformat().replace("+00:00", "Z")
+            if latest_row_update_dt is not None
+            else datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        )
+
         summary = {
             "total": len(rows),
             "selected": sum(1 for row in rows if bool(row.get("selected"))),
@@ -3471,7 +3510,8 @@ def load_rotation_live() -> dict[str, Any]:
         }
         live_payload = {
             "ok": True,
-            "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "generatedAt": live_generated_at,
+            "rebuiltAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "sourceFile": rotation_file,
             "selected": sorted(selected_symbols),
             "watchSymbols": symbols,

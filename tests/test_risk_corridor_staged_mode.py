@@ -52,6 +52,7 @@ class TestRiskCorridorStagedMode(unittest.TestCase):
                 "corridor_staged_entry_wait_bars": float(entry_wait_bars),
                 "corridor_staged_transition_smoothing_bars": 1.0,
                 "corridor_staged_require_rising": 1.0,
+                "corridor_staged_profit_target_base_pct": 0.6,
             },
         )
 
@@ -189,6 +190,80 @@ class TestRiskCorridorStagedMode(unittest.TestCase):
         )
         self.assertEqual(exit_decision.reason, "corridor_stage_hold")
         self.assertEqual(exit_decision.target_position_btc, 10.0)
+
+    def test_profit_only_corridor_mode_defers_to_profit_roll_exit(self) -> None:
+        cfg = self._config()
+        cfg.profit_only_auto_exits = True
+        cfg.require_break_even_for_exit = True
+        cfg.profit_roll_exit_enabled = True
+        cfg.profit_roll_arm_eur = 0.10
+        cfg.profit_roll_retrace_eur = 0.0
+        cfg.profit_roll_retrace_pct = 50.0
+        cfg.profit_roll_min_retrace_eur = 0.02
+        cfg.profit_roll_min_keep_profit_bps = 0.0
+        manager = RiskManager(cfg)
+        gate_allow = GateDecision(
+            ts=datetime.now(timezone.utc),
+            allow=True,
+            size_factor=1.0,
+            reason=None,
+        )
+
+        long_state_peak = self._state(position_btc=10.0, price=1.0200, avg_entry_price=1.0)
+        hold_decision = manager.decide(
+            long_state_peak,
+            self._features(corridor_pos_pct=25.0, price=1.0200),
+            gate_allow,
+            predicted_edge_bps=20.0,
+        )
+        self.assertGreater(hold_decision.target_position_btc, 0.0)
+
+        long_state_retrace = self._state(position_btc=10.0, price=1.0090, avg_entry_price=1.0)
+        exit_decision = manager.decide(
+            long_state_retrace,
+            self._features(corridor_pos_pct=25.0, price=1.0090),
+            gate_allow,
+            predicted_edge_bps=20.0,
+        )
+        self.assertEqual(exit_decision.reason, "profit_roll_exit")
+        self.assertEqual(exit_decision.target_position_btc, 0.0)
+
+    def test_profit_only_corridor_mode_arms_profit_roll_from_percent_sockel(self) -> None:
+        cfg = self._config()
+        cfg.profit_only_auto_exits = True
+        cfg.require_break_even_for_exit = True
+        cfg.profit_roll_exit_enabled = True
+        cfg.profit_roll_arm_eur = 0.0
+        cfg.profit_roll_retrace_eur = 0.0
+        cfg.profit_roll_retrace_pct = 50.0
+        cfg.profit_roll_min_retrace_eur = 0.02
+        cfg.profit_roll_min_keep_profit_bps = 0.0
+        manager = RiskManager(cfg)
+        gate_allow = GateDecision(
+            ts=datetime.now(timezone.utc),
+            allow=True,
+            size_factor=1.0,
+            reason=None,
+        )
+
+        long_state_peak = self._state(position_btc=10.0, price=1.0080, avg_entry_price=1.0)
+        hold_decision = manager.decide(
+            long_state_peak,
+            self._features(corridor_pos_pct=25.0, price=1.0080),
+            gate_allow,
+            predicted_edge_bps=20.0,
+        )
+        self.assertGreater(hold_decision.target_position_btc, 0.0)
+
+        long_state_retrace = self._state(position_btc=10.0, price=1.0030, avg_entry_price=1.0)
+        exit_decision = manager.decide(
+            long_state_retrace,
+            self._features(corridor_pos_pct=25.0, price=1.0030),
+            gate_allow,
+            predicted_edge_bps=20.0,
+        )
+        self.assertEqual(exit_decision.reason, "profit_roll_exit")
+        self.assertEqual(exit_decision.target_position_btc, 0.0)
 
     def test_corridor_mode_waits_in_10_to_20_band_before_entry(self) -> None:
         manager = RiskManager(self._config())

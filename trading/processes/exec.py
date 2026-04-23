@@ -1250,7 +1250,10 @@ def run_exec(ctx: ProcessContext) -> None:
         for payload in warn_items:
             _send_journal(ctx, "exec_fill_truth_gap", payload)
 
+    buy_order_ids: set[str] = set()
+
     def _emit_exec_report(report: ExecutionReport) -> None:
+        nonlocal buy_settlement_confirm_pending
         meta: Dict[str, Any] = dict(report.meta) if isinstance(report.meta, dict) else {}
         aliases = _aliases_for_order(report.order_id)
         if aliases:
@@ -1266,6 +1269,22 @@ def run_exec(ctx: ProcessContext) -> None:
             if merged:
                 meta["order_aliases"] = sorted(merged)
         report.meta = meta
+        report_ids = {str(report.order_id or "").strip()}
+        report_ids.update(str(alias).strip() for alias in aliases if str(alias).strip())
+        report_ids.discard("")
+        is_buy_report = any(order_id in buy_order_ids for order_id in report_ids)
+        terminal_status = str(report.status or "").upper().strip() in {"FILLED", "CANCELED", "REJECTED"}
+        if terminal_status:
+            for order_id in report_ids:
+                buy_order_ids.discard(order_id)
+        if is_buy_report and str(report.status or "").upper().strip() in {"CANCELED", "REJECTED"}:
+            buy_settlement_confirm_pending = True
+            _request_balance_refresh("buy_settlement_check", immediate=True)
+            _send_journal(
+                ctx,
+                "exec_buy_settlement_check_requested",
+                {"order_ids": sorted(report_ids), "status": str(report.status or "").upper().strip()},
+            )
         try_put(ctx.q_exec_report, report)
         _send_journal(ctx, "exec_report", _exec_report_payload(report))
         source = str(meta.get("source", ""))
@@ -1540,6 +1559,7 @@ def run_exec(ctx: ProcessContext) -> None:
     last_core_sync_position_btc: Optional[float] = None
     last_core_sync_avg_entry_price: Optional[float] = None
     startup_flat_balance_needs_confirm = False
+    buy_settlement_confirm_pending = False
     balance_req_lock = threading.Lock()
     balance_pending = False
     balance_pending_reason: Optional[str] = None
@@ -1937,8 +1957,8 @@ def run_exec(ctx: ProcessContext) -> None:
             last_balances_refresh = time.time()
             _send_journal(ctx, "exec_balance_error", {"source": source, "error": str(exc)})
 
-    def _request_balance_refresh(reason: str) -> None:
-        nonlocal balance_pending, balance_pending_reason
+    def _request_balance_refresh(reason: str, *, immediate: bool = False) -> None:
+        nonlocal balance_pending, balance_pending_reason, balance_next_allowed_ts
         if adapter is None:
             return
         if not hasattr(adapter, "balance"):
@@ -1946,6 +1966,8 @@ def run_exec(ctx: ProcessContext) -> None:
         with balance_req_lock:
             balance_pending = True
             balance_pending_reason = str(reason or "event")
+            if immediate:
+                balance_next_allowed_ts = 0.0
 
     if deadman_adapter is not None:
         if canary:
@@ -2323,6 +2345,15 @@ def run_exec(ctx: ProcessContext) -> None:
                 _set_accept_new(True, cmd.reason or cmd.action.lower())
             elif cmd.action == "CANCEL_ALL":
                 canceled = order_sm.cancel_all(datetime.now(timezone.utc))
+                canceled_buy_ids = sorted(order_id for order_id in canceled if order_id in buy_order_ids)
+                if canceled_buy_ids:
+                    buy_settlement_confirm_pending = True
+                    _request_balance_refresh("cancel_all_buy_settlement_check", immediate=True)
+                    _send_journal(
+                        ctx,
+                        "exec_buy_settlement_check_requested",
+                        {"order_ids": canceled_buy_ids, "status": "CANCEL_ALL"},
+                    )
                 if simulator is not None:
                     simulator.cancel_all()
                 if adapter is not None:
@@ -2362,6 +2393,15 @@ def run_exec(ctx: ProcessContext) -> None:
                 # and drop any queued intents so the next START begins from a clean slate.
                 _set_accept_new(False, cmd.reason or "budget_reset")
                 canceled = order_sm.cancel_all(datetime.now(timezone.utc))
+                canceled_buy_ids = sorted(order_id for order_id in canceled if order_id in buy_order_ids)
+                if canceled_buy_ids:
+                    buy_settlement_confirm_pending = True
+                    _request_balance_refresh("budget_reset_buy_settlement_check", immediate=True)
+                    _send_journal(
+                        ctx,
+                        "exec_buy_settlement_check_requested",
+                        {"order_ids": canceled_buy_ids, "status": "BUDGET_RESET"},
+                    )
                 if simulator is not None:
                     simulator.cancel_all()
                 if adapter is not None:
@@ -2426,6 +2466,9 @@ def run_exec(ctx: ProcessContext) -> None:
                 if startup_flat_balance_needs_confirm:
                     _refresh_balances("pre_buy_confirm")
                     startup_flat_balance_needs_confirm = False
+                if buy_settlement_confirm_pending:
+                    _refresh_balances("pre_buy_settlement_confirm")
+                    buy_settlement_confirm_pending = False
                 exchange_base_position = _balance_for_asset(last_balances, pair_base_asset, field="total")
                 exchange_base_position = max(0.0, float(exchange_base_position or 0.0))
                 existing_position_threshold = max(1e-9, float(sync_min_position_btc), float(min_trade_btc))
@@ -2455,6 +2498,9 @@ def run_exec(ctx: ProcessContext) -> None:
                 post_only=intent.post_only,
                 id=order_id,
             )
+            is_buy_order = str(order.side or "").lower() == "buy"
+            if is_buy_order:
+                buy_order_ids.add(order_id)
             order_reference_price = _intent_reference_price(intent, adapter=adapter, symbol=pair_rest)
             exchange_min_notional = 0.0
             if isinstance(adapter, BinanceRestClient):
@@ -2626,6 +2672,8 @@ def run_exec(ctx: ProcessContext) -> None:
                             exchange_order_id = txid
                             _register_txid_alias(txid, order_id)
                             _track_known_txid(txid, "OPEN")
+                            if is_buy_order:
+                                buy_order_ids.add(txid)
                             fill_tracker.set_target(txid, order.qty_btc)
                             with sm_lock:
                                 order_sm.transition(txid, "OPEN", datetime.now(timezone.utc), allow_recovery=True)

@@ -1137,7 +1137,7 @@ def _profile_values(name: str) -> dict[str, float | int]:
     profile.setdefault("corridor_short_horizon_entry_guard_enabled", 1.0)
     profile.setdefault("corridor_short_horizon_entry_window_bars", 1440.0)
     profile.setdefault("corridor_short_horizon_entry_min_bars", 720.0)
-    profile.setdefault("corridor_short_horizon_no_buy_above_pct", 55.0)
+    profile.setdefault("corridor_short_horizon_no_buy_above_pct", 60.0)
     swing_buy_band, swing_sell_band = _sanitize_swing_bands(
         profile.get("swing_buy_band"),
         profile.get("swing_sell_band"),
@@ -3043,7 +3043,7 @@ def _set_fraction(
         0.0,
         min(
             100.0,
-            float(profile.get("corridor_short_horizon_no_buy_above_pct", 55.0) or 55.0),
+            float(profile.get("corridor_short_horizon_no_buy_above_pct", 60.0) or 60.0),
         ),
     )
     scaled_profit_corridor_window_bars = _scaled_bars_for_interval(

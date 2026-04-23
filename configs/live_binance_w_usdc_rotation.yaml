@@ -243,7 +243,7 @@ execution:
   slippage_bps: 1.0
 md:
   exchange: binance
-  pair: T/USDC
+  pair: W/USDC
   ws_url: wss://stream.binance.com:9443
   stale_seconds: 180
   stale_book_seconds: 180
@@ -304,7 +304,7 @@ policy:
     staged_profit_target_mult_50: 0.8
 exec:
   exchange: binance
-  pair: T/USDC
+  pair: W/USDC
   rate_limit_per_sec: 5.0
   reconcile_interval_sec: 10.0
   canary_mode: false
@@ -323,8 +323,8 @@ exec:
   min_entry_notional_eur: 6.0
   sell_balance_buffer_btc: 0.0
 journal:
-  db_path: logs/journal_live_binance_t_usdc_rotation.db
-  json_path: logs/journal_live_binance_t_usdc_rotation.jsonl
+  db_path: logs/journal_live_binance_w_usdc_rotation.db
+  json_path: logs/journal_live_binance_w_usdc_rotation.jsonl
 ipc:
   market_queue_size: 1
   impact_queue_size: 1
@@ -337,10 +337,10 @@ ipc:
 impact:
   enabled: false
   source: api
-  symbol: T/USDC
+  symbol: W/USDC
   interval_seconds: 300
   timeout_seconds: 3
-  api_url: http://127.0.0.1:8331/signal/multi-asset-probability?target=T&lookback=72h
+  api_url: http://127.0.0.1:8331/signal/multi-asset-probability?target=W&lookback=72h
   file_path: modules/impact_console/diagnostics/arrow_1h.json
   fallback_to_file: false
 news:
@@ -358,7 +358,7 @@ control:
   stale_warn_sec: 12
 live:
   exchange: binance
-  symbol: T/USDC
+  symbol: W/USDC
   api_key: ${BINANCE_API_KEY}
   api_secret: ${BINANCE_API_SECRET}
   rate_limit_per_sec: 5.0

@@ -1,6 +1,7 @@
 (function () {
   const tokenInput = document.getElementById('token');
-  const reportDateInput = document.getElementById('reportDate');
+  const reportFromDateInput = document.getElementById('reportFromDate');
+  const reportToDateInput = document.getElementById('reportToDate');
   const reportSymbolInput = document.getElementById('reportSymbol');
   const loadReportBtn = document.getElementById('loadReportBtn');
   const loadRotationBtn = document.getElementById('loadRotationBtn');
@@ -34,10 +35,12 @@
 
   const TOKEN_KEY = 'relay_token';
   const REPORT_SYMBOL_KEY = 'relay_report_symbol';
+  const REPORT_FROM_DATE_KEY = 'relay_report_from_date';
+  const REPORT_TO_DATE_KEY = 'relay_report_to_date';
   const MIN_REPORT_LOAD_INTERVAL_MS = 20000;
   const MIN_ROTATION_LOAD_INTERVAL_MS = 8000;
   const MIN_LIVE_LOAD_INTERVAL_MS = 15000;
-  const LIVE_REFRESH_INTERVAL_MS = 30000;
+  const LIVE_REFRESH_INTERVAL_MS = 15000;
   let lastReportLoadAtMs = 0;
   let lastRotationLoadAtMs = 0;
   let lastLiveLoadAtMs = 0;
@@ -51,9 +54,21 @@
     return `${yyyy}-${mm}-${dd}`;
   }
 
-  function fmtNum(v) {
-    const n = Number(v || 0);
-    return n.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  function nextDayStr(dayStr) {
+    const parts = String(dayStr || '').split('-').map((value) => Number(value));
+    if (parts.length !== 3 || parts.some((value) => !Number.isFinite(value))) return '';
+    const dt = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2] + 1, 0, 0, 0, 0));
+    const yyyy = dt.getUTCFullYear();
+    const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(dt.getUTCDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  function fmtNum(v, digits = 2) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return '-';
+    const d = Math.max(0, Math.min(8, Number.isFinite(Number(digits)) ? Number(digits) : 2));
+    return n.toLocaleString('de-DE', { minimumFractionDigits: d, maximumFractionDigits: d });
   }
 
   function fmtSignedNum(v) {
@@ -81,6 +96,18 @@
     return n.toLocaleString('de-DE', { minimumFractionDigits: digits, maximumFractionDigits: digits });
   }
 
+  function fmtMoneyOrDash(v, digits = 2) {
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0) return '-';
+    return fmtNum(n, digits);
+  }
+
+  function parseOptionalNumber(v) {
+    if (v === null || v === undefined || v === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+
   function fmtAgeSec(v) {
     const n = Number(v || 0);
     if (!Number.isFinite(n) || n < 0) return '-';
@@ -103,6 +130,14 @@
       minute: '2-digit',
       second: '2-digit'
     });
+  }
+
+  function isoAgeSec(iso) {
+    const dt = new Date(iso);
+    if (Number.isNaN(dt.getTime())) return NaN;
+    const sec = (Date.now() - dt.getTime()) / 1000;
+    if (!Number.isFinite(sec) || sec < 0) return NaN;
+    return sec;
   }
 
   function fmtPct(v, digits = 0) {
@@ -508,7 +543,7 @@
       const qty = Number(it.quantity || 0);
       const buyGross = Number(it.buyGrossUsdc || 0);
       const sellGross = Number(it.sellGrossUsdc || 0);
-      const proceeds = Number(it.proceedsUsdc);
+      const proceeds = parseOptionalNumber(it.proceedsUsdc);
       const buyNotional = (
         Number.isFinite(buyPrice) && buyPrice > 0 && Number.isFinite(qty) && qty > 0
           ? buyPrice * qty
@@ -531,7 +566,7 @@
             sellTime,
             buyGrossUsdc: Number.isFinite(buyGross) ? buyGross : 0,
             sellGrossUsdc: Number.isFinite(sellGross) ? sellGross : 0,
-            proceedsUsdc: Number.isFinite(proceeds) ? proceeds : 0,
+            proceedsUsdc: proceeds,
             buyNotionalUsdc: Number.isFinite(buyNotional) ? buyNotional : 0,
             sellNotionalUsdc: Number.isFinite(sellNotional) ? sellNotional : 0,
             closed: true
@@ -541,7 +576,9 @@
         prev.quantity += Number.isFinite(qty) ? qty : 0;
         prev.buyGrossUsdc += Number.isFinite(buyGross) ? buyGross : 0;
         prev.sellGrossUsdc += Number.isFinite(sellGross) ? sellGross : 0;
-        prev.proceedsUsdc += Number.isFinite(proceeds) ? proceeds : 0;
+        if (proceeds !== null) {
+          prev.proceedsUsdc = Number(prev.proceedsUsdc || 0) + proceeds;
+        }
         prev.buyNotionalUsdc += Number.isFinite(buyNotional) ? buyNotional : 0;
         prev.sellNotionalUsdc += Number.isFinite(sellNotional) ? sellNotional : 0;
         const prevBuyTime = String(prev.buyTime || '').trim();
@@ -557,7 +594,7 @@
         sellTime: String(it.sellTime || ''),
         buyGrossUsdc: Number.isFinite(buyGross) ? buyGross : 0,
         sellGrossUsdc: Number.isFinite(sellGross) ? sellGross : 0,
-        proceedsUsdc: Number.isFinite(proceeds) ? proceeds : null,
+        proceedsUsdc: proceeds,
         buyPrice: Number(it.buyPrice || 0),
         sellPrice: Number(it.sellPrice || 0),
         closed,
@@ -592,7 +629,7 @@
   }
 
   function setTradeRows(items, daySummary) {
-    const displayItems = aggregateTradeRowsForDisplay(items);
+    const displayItems = aggregateTradeRowsForDisplay(items).filter((it) => Boolean(it && it.closed));
     if (!tradeRowsEl) return;
     if (!displayItems.length) {
       tradeRowsEl.innerHTML = '<tr><td colspan="4">Keine Daten</td></tr>';
@@ -606,12 +643,16 @@
       const sellGross = Number(it.sellGrossUsdc || 0);
       const buyPrice = Number(it.buyPrice || (qty > 0 ? (buyGross / qty) : 0));
       const sellPrice = Number(it.sellPrice || (qty > 0 ? (sellGross / qty) : 0));
-      const buyCell = `${fmtPrice(buyPrice)} USDC × ${fmtQty(qty)}`;
-      const sellCell = (it.closed && sellPrice > 0)
+      const hasBuy = qty > 0 && buyPrice > 0;
+      const hasSell = Boolean(it.closed) && qty > 0 && sellPrice > 0;
+      const buyCell = hasBuy
+        ? `${fmtPrice(buyPrice)} USDC × ${fmtQty(qty)}`
+        : '-';
+      const sellCell = hasSell
         ? `${fmtPrice(sellPrice)} USDC × ${fmtQty(qty)}<div class="small">Verkauf: ${fmtTime(it.sellTime)}</div>`
         : '-';
-      const proceeds = Number(it.proceedsUsdc);
-      const hasPnl = Number.isFinite(proceeds);
+      const proceeds = parseOptionalNumber(it.proceedsUsdc);
+      const hasPnl = proceeds !== null;
       const pnlText = hasPnl ? `${fmtSignedNum(proceeds)} USDC` : '-';
       const pnlCls = hasPnl ? pnlClass(proceeds) : 'pnl-flat';
 
@@ -675,9 +716,13 @@
       !item?.positionOpen &&
       Number(item?.openOrdersCount || 0) <= 0
     ).length;
+    const rebuilt = payload.rebuiltAt ? fmtDateTime(payload.rebuiltAt) : '-';
     const generated = payload.generatedAt ? fmtDateTime(payload.generatedAt) : '-';
+    const dataAge = fmtAgeSec(isoAgeSec(payload.generatedAt));
     liveMetaEl.innerHTML =
-      `Stand: <strong>${generated}</strong> | ` +
+      `Stand: <strong>${rebuilt}</strong> | ` +
+      `Daten: <strong>${generated}</strong> | ` +
+      `Alter: <strong>${dataAge}</strong> | ` +
       `Coins: <strong>${summary.total || 0}</strong> | ` +
       `Live-Lanes: <strong>${summary.running || 0}</strong> | ` +
       `Nur-Watch: <strong>${watchOnlyRunning}</strong> | ` +
@@ -695,7 +740,9 @@
     const metaMode = summary?.metaMode || '-';
     const confidence = fmtPct(summary?.confidence || 0, 0);
     const lookbackHours = Number(summary?.lookbackHours || 0);
-    const lookback = lookbackHours > 0 ? `${fmtNum(lookbackHours, Number.isInteger(lookbackHours) ? 0 : 1)}h` : '-';
+    const lookback = lookbackHours > 0
+      ? `${fmtNum(lookbackHours, Number.isInteger(lookbackHours) ? 0 : 1)}h`
+      : '-';
     const notes = String(summary?.notes || '').trim();
     const notesHtml = notes
       ? `<br><span class="small">Hinweis: ${escapeHtml(notes.split(';').join(' | '))}</span>`
@@ -781,7 +828,7 @@
 
   function liveExitNeedSubText(item) {
     const mode = String(item?.exitMode || '').trim().toLowerCase();
-    if (mode === 'profit_roll_abs') return 'bis Gewinnsockel';
+    if (mode.startsWith('profit_roll')) return 'bis Gewinnsockel';
     if (mode === 'profit_target') return 'bis Gewinnziel';
     if (mode === 'stage_roll') return 'nächster regulärer Exit';
     return 'nächster Exit';
@@ -793,12 +840,28 @@
     const stateHtml = rollArmed
       ? '<span class="live-active-label">roll aktiv</span>'
       : null;
-    if (mode === 'profit_roll_abs') {
+    if (mode.startsWith('profit_roll')) {
       const armUsdc = Number(item?.exitArmUsdc);
+      const armPct = Number(item?.exitArmPct);
       const retraceUsdc = Number(item?.exitRetraceUsdc);
+      const retracePct = Number(item?.exitRetracePct);
       const state = stateHtml || 'gewinnziel';
-      const armText = Number.isFinite(armUsdc) ? `${fmtNum(armUsdc)} USDC` : '-';
-      const retraceText = Number.isFinite(retraceUsdc) ? `${fmtNum(retraceUsdc)} USDC` : '-';
+      const armText = Number.isFinite(armPct) && armPct > 0
+        ? `${armPct.toLocaleString('de-DE', {
+          minimumFractionDigits: 1,
+          maximumFractionDigits: 2
+        })}%`
+        : (Number.isFinite(armUsdc) ? `${fmtNum(armUsdc)} USDC` : '-');
+      const retraceText = Number.isFinite(retraceUsdc) && retraceUsdc > 0
+        ? `${fmtNum(retraceUsdc)} USDC`
+        : (
+          Number.isFinite(retracePct)
+            ? `${retracePct.toLocaleString('de-DE', {
+              minimumFractionDigits: 0,
+              maximumFractionDigits: 2
+            })}%`
+            : '-'
+        );
       return `Sockel ${armText} | Rückfall ${retraceText} (${state})`;
     }
     if (mode === 'profit_target') {
@@ -846,7 +909,18 @@
     const sorted = sortedLiveRows(primaryRows);
     const sortedCandidates = sortedCandidateRows(candidateRows);
 
-    const primaryHtml = sorted.map((it) => `
+    const primaryHtml = sorted.map((it) => {
+      const qty = Number(it.positionQty || 0);
+      const entryValueUsdc = Number(it.entryValueUsdc);
+      const exitValueUsdc = Number(it.exitValueUsdc);
+      const hasPosition = qty > 0 || Boolean(it.currentlyTrading) || Boolean(it.positionOpen);
+      const entryMeta = hasPosition
+        ? `${fmtMoneyOrDash(entryValueUsdc)}${entryValueUsdc > 0 ? ' USDC' : ''}${qty > 0 ? ` | ${fmtQty(qty)}` : ''}`
+        : '-';
+      const exitMeta = hasPosition && exitValueUsdc > 0
+        ? `${fmtMoneyOrDash(exitValueUsdc)} USDC`
+        : '-';
+      return `
       <tr class="${liveRowClass(it)}">
         <td>${symbolLink(it.symbol, it.market)}</td>
         <td>
@@ -855,11 +929,11 @@
         </td>
         <td>
           <div>${fmtPrice(it.entryPrice)}</div>
-          <div class="small">${fmtNum(it.entryValueUsdc)} USDC | ${fmtQty(it.positionQty)}</div>
+          <div class="small">${entryMeta}</div>
         </td>
         <td>
           <div>${fmtPrice(it.exitPrice)}</div>
-          <div class="small">${fmtNum(it.exitValueUsdc)} USDC</div>
+          <div class="small">${exitMeta}</div>
         </td>
         <td>
           <div class="${pnlClass(it.totalPnlUsdc)}">${fmtSignedNum(it.totalPnlUsdc)} USDC</div>
@@ -878,7 +952,8 @@
           <div class="small">${fmtDateTime(it.updatedAt)}</div>
         </td>
       </tr>
-    `).join('');
+    `;
+    }).join('');
 
     if (!primaryHtml) {
       liveRows.innerHTML = '<tr><td colspan="8">Keine aktive Live-Lane.</td></tr>';
@@ -1165,7 +1240,8 @@
       return;
     }
     const token = tokenInput.value.trim();
-    const reportDate = reportDateInput.value;
+    const reportFromDate = reportFromDateInput?.value || '';
+    const reportToDate = reportToDateInput?.value || '';
     const symbolInput = (reportSymbolInput?.value || '').trim();
     const normalized = cleanSymbol(symbolInput);
     const reportSymbol = normalized
@@ -1176,16 +1252,23 @@
       setStatus('Relay Token fehlt.', 'error');
       return;
     }
-    if (!reportDate) {
-      setStatus('Tag fehlt.', 'error');
+    if (!reportFromDate || !reportToDate) {
+      setStatus('Von/Bis fehlt.', 'error');
+      return;
+    }
+    if (reportToDate < reportFromDate) {
+      setStatus('Bis muss gleich oder nach Von liegen.', 'error');
       return;
     }
 
     localStorage.setItem(TOKEN_KEY, token);
     if (reportSymbolInput) localStorage.setItem(REPORT_SYMBOL_KEY, symbolInput);
+    if (reportFromDateInput) localStorage.setItem(REPORT_FROM_DATE_KEY, reportFromDate);
+    if (reportToDateInput) localStorage.setItem(REPORT_TO_DATE_KEY, reportToDate);
 
     const payload = {
-      dayUtc: reportDate,
+      fromIso: `${reportFromDate}T00:00:00Z`,
+      toIso: `${nextDayStr(reportToDate)}T00:00:00Z`,
       source: 'auto'
     };
     if (reportSymbol) payload.symbol = reportSymbol;
@@ -1274,9 +1357,12 @@
 
   const savedToken = localStorage.getItem(TOKEN_KEY) || '';
   const savedReportSymbol = localStorage.getItem(REPORT_SYMBOL_KEY) || '';
+  const savedReportFromDate = localStorage.getItem(REPORT_FROM_DATE_KEY) || '';
+  const savedReportToDate = localStorage.getItem(REPORT_TO_DATE_KEY) || '';
   tokenInput.value = savedToken;
   if (reportSymbolInput) reportSymbolInput.value = savedReportSymbol;
-  reportDateInput.value = todayStr();
+  if (reportFromDateInput) reportFromDateInput.value = savedReportFromDate || todayStr();
+  if (reportToDateInput) reportToDateInput.value = savedReportToDate || todayStr();
 
   loadReportBtn.addEventListener('click', loadReport);
   loadRotationBtn.addEventListener('click', loadRotation);

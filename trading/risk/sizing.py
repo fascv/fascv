@@ -139,10 +139,11 @@ class RiskConfig:
     peak_profit_retrace_enabled: bool = False
     peak_profit_retrace_arm_bps: float = 0.0
     peak_profit_retrace_pct: float = 0.0
-    # Absolute-profit rolling exit:
-    # arm after open PnL (quote currency) reaches arm_eur, then flatten when
-    # open PnL retraces from its local peak. A positive retrace_eur keeps the
-    # legacy fixed-EUR behavior; otherwise retrace_pct locks a share of the peak.
+    # Rolling profit exit:
+    # arm after open PnL reaches arm_eur, or when the live profit-only path
+    # uses the staged base target percent as a price-based arming threshold.
+    # A positive retrace_eur keeps the legacy fixed-EUR behavior; otherwise
+    # retrace_pct locks a share of the peak profit.
     profit_roll_exit_enabled: bool = False
     profit_roll_arm_eur: float = 0.0
     profit_roll_retrace_eur: float = 0.0
@@ -1419,8 +1420,6 @@ class RiskManager:
         def _profit_roll_exit_hit() -> bool:
             if not profit_roll_exit_enabled or pos <= eps:
                 return False
-            if profit_roll_arm_eur <= 0.0:
-                return False
             if price <= 0.0:
                 return False
             avg_entry = float(getattr(state, "avg_entry_price", 0.0) or 0.0)
@@ -1431,7 +1430,22 @@ class RiskManager:
                 return False
             open_pnl_eur = (price - avg_entry) * pos
             peak_pnl_eur = (peak - avg_entry) * pos
-            if peak_pnl_eur < profit_roll_arm_eur:
+            # In the current live profit-only path, a zero EUR sockel means:
+            # use the staged base target percent as the roll arming threshold.
+            profit_roll_arm_pct = 0.0
+            if profit_only_auto_exits and profit_roll_arm_eur <= 0.0:
+                profit_roll_arm_pct = max(
+                    0.0,
+                    float(features.values.get("corridor_staged_profit_target_base_pct", 0.0) or 0.0),
+                )
+            if profit_roll_arm_eur > 0.0:
+                if peak_pnl_eur < profit_roll_arm_eur:
+                    return False
+            elif profit_roll_arm_pct > 0.0:
+                peak_profit_pct = ((peak / avg_entry) - 1.0) * 100.0
+                if peak_profit_pct < profit_roll_arm_pct:
+                    return False
+            else:
                 return False
             if profit_roll_retrace_eur > 0.0:
                 retrace_need_eur = max(profit_roll_retrace_eur, profit_roll_min_retrace_eur)
@@ -1605,6 +1619,12 @@ class RiskManager:
                     self._corridor_entry_stage_pct = seeded
                     self._corridor_pending_entry_stage_pct = 0.0
                 entry_stage = float(self._corridor_entry_stage_pct or 0.0)
+                # Live profit-only mode keeps corridor staging for entries, but exits must
+                # be owned solely by the standalone profit-roll logic below.
+                if profit_only_auto_exits and profit_roll_exit_enabled:
+                    self._corridor_exit_armed = False
+                    self._corridor_exit_peak_pct = 0.0
+                    return None
                 profit_target_enabled = (
                     float(features.values.get("corridor_staged_profit_target_enabled", 0.0) or 0.0)
                     >= 0.5
